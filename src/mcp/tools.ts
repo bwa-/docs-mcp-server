@@ -12,6 +12,7 @@ import {
   RemoveTool,
   ScrapeTool,
   SearchTool,
+  SuggestLibrariesTool,
 } from "../tools";
 
 /**
@@ -19,6 +20,7 @@ import {
  */
 export interface McpServerTools {
   listLibraries: ListLibrariesTool;
+  suggestLibraries: SuggestLibrariesTool;
   findVersion: FindVersionTool;
   scrape: ScrapeTool;
   refresh: RefreshVersionTool;
@@ -43,6 +45,7 @@ export async function initializeTools(
 ): Promise<McpServerTools> {
   const tools: McpServerTools = {
     listLibraries: new ListLibrariesTool(docService),
+    suggestLibraries: new SuggestLibrariesTool(docService),
     findVersion: new FindVersionTool(docService),
     scrape: new ScrapeTool(pipeline),
     refresh: new RefreshVersionTool(pipeline),

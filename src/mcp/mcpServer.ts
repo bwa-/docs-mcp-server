@@ -264,6 +264,50 @@ ${r.content}\n`,
     },
   );
 
+  // Suggest libraries tool
+  server.tool(
+    "suggest_libraries",
+    "Analyze a query and suggest relevant libraries to search. Returns libraries ranked by relevance to the query.",
+    {
+      query: z.string().trim().describe("Research query or topic."),
+      maxLibraries: z
+        .number()
+        .optional()
+        .default(5)
+        .describe("Maximum number of libraries to suggest (default: 5)."),
+    },
+    {
+      title: "Suggest Relevant Libraries",
+      readOnlyHint: true,
+      destructiveHint: false,
+    },
+    async ({ query, maxLibraries }) => {
+      // Track MCP tool usage
+      telemetry.track(TelemetryEvent.TOOL_USED, {
+        tool: "suggest_libraries",
+        context: "mcp_server",
+        maxLibraries,
+      });
+
+      try {
+        const result = await tools.suggestLibraries.execute({
+          query,
+          maxLibraries,
+        });
+
+        if (result.libraries.length === 0) {
+          // Return empty array
+          return createResponse(JSON.stringify([]));
+        }
+
+        // Return just the libraries array as JSON for direct iteration
+        return createResponse(JSON.stringify(result.libraries));
+      } catch (error) {
+        return createError(error);
+      }
+    },
+  );
+
   // Find version tool
   server.tool(
     "find_version",

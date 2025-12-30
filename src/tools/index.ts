@@ -10,3 +10,4 @@ export * from "./RefreshVersionTool";
 export * from "./RemoveTool";
 export * from "./ScrapeTool";
 export * from "./SearchTool";
+export * from "./SuggestLibrariesTool";
