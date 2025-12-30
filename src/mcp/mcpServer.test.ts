@@ -12,6 +12,9 @@ const mockTools: McpServerTools = {
   listLibraries: {
     execute: vi.fn(async () => ({ libraries: [] })),
   } as any,
+  suggestLibraries: {
+    execute: vi.fn(async () => ({ libraries: [] })),
+  } as any,
   findVersion: {
     execute: vi.fn(async () => "Version found"),
   } as any,
