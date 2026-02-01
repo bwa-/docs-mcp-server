@@ -1,3 +1,4 @@
+import type { AppConfig } from "../../utils/config";
 import { logger } from "../../utils/logger";
 import { HttpFetcher } from "../fetcher";
 import { FetchStatus } from "../fetcher/types";
@@ -26,11 +27,12 @@ interface GitHubWikiInfo {
  * This processor is stateless and contains the core logic from GitHubWikiScraperStrategy.
  */
 export class GitHubWikiProcessor {
-  private readonly httpFetcher = new HttpFetcher();
+  private readonly httpFetcher: HttpFetcher;
   private readonly pipelines: ContentPipeline[];
 
-  constructor() {
-    this.pipelines = PipelineFactory.createStandardPipelines();
+  constructor(config: AppConfig) {
+    this.httpFetcher = new HttpFetcher(config.scraper);
+    this.pipelines = PipelineFactory.createStandardPipelines(config);
   }
 
   /**
@@ -84,6 +86,7 @@ export class GitHubWikiProcessor {
   async process(
     item: QueueItem,
     options: ScraperOptions,
+    headers?: Record<string, string>,
     signal?: AbortSignal,
   ): Promise<ProcessItemResult> {
     const currentUrl = item.url;
@@ -93,6 +96,7 @@ export class GitHubWikiProcessor {
       const rawContent = await this.httpFetcher.fetch(currentUrl, {
         signal,
         etag: item.etag,
+        headers,
       });
 
       // Return the status directly - BaseScraperStrategy handles NOT_MODIFIED and NOT_FOUND

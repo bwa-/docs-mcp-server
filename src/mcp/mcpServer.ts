@@ -4,7 +4,7 @@ import { PipelineJobStatus } from "../pipeline/types";
 import { TelemetryEvent, telemetry } from "../telemetry";
 import type { JobInfo } from "../tools";
 import { ToolError } from "../tools/errors";
-import { DEFAULT_MAX_DEPTH, DEFAULT_MAX_PAGES } from "../utils/config";
+import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
 import type { McpServerTools } from "./tools";
 import { createError, createResponse } from "./utils";
@@ -12,13 +12,14 @@ import { createError, createResponse } from "./utils";
 /**
  * Creates and configures an instance of the MCP server with registered tools and resources.
  * @param tools The shared tool instances to use for server operations.
- * @param readOnly Whether to run in read-only mode (only expose read tools).
+ * @param config The application configuration.
  * @returns A configured McpServer instance.
  */
 export function createMcpServerInstance(
   tools: McpServerTools,
-  readOnly = false,
+  config: AppConfig,
 ): McpServer {
+  const readOnly = config.app.readOnly;
   const server = new McpServer(
     {
       name: "docs-mcp-server",
@@ -37,7 +38,6 @@ export function createMcpServerInstance(
   // Only register write/job tools if not in read-only mode
   if (!readOnly) {
     // Scrape docs tool - suppress deep inference issues
-    // @ts-expect-error TypeScript has issues with deep Zod inference in MCP SDK
     server.tool(
       "scrape_docs",
       "Scrape and index documentation from a URL for a library. Use this tool to index a new library or a new version.",
@@ -48,13 +48,15 @@ export function createMcpServerInstance(
         maxPages: z
           .number()
           .optional()
-          .default(DEFAULT_MAX_PAGES)
-          .describe(`Maximum number of pages to scrape (default: ${DEFAULT_MAX_PAGES}).`),
+          .default(config.scraper.maxPages)
+          .describe(
+            `Maximum number of pages to scrape (default: ${config.scraper.maxPages}).`,
+          ),
         maxDepth: z
           .number()
           .optional()
-          .default(DEFAULT_MAX_DEPTH)
-          .describe(`Maximum navigation depth (default: ${DEFAULT_MAX_DEPTH}).`),
+          .default(config.scraper.maxDepth)
+          .describe(`Maximum navigation depth (default: ${config.scraper.maxDepth}).`),
         scope: z
           .enum(["subpages", "hostname", "domain"])
           .optional()
@@ -351,7 +353,6 @@ ${r.content}\n`,
   // Job and write tools - only available when not in read-only mode
   if (!readOnly) {
     // List jobs tool - suppress deep inference issues
-    // @ts-expect-error TypeScript has issues with deep Zod inference in MCP SDK
     server.tool(
       "list_jobs",
       "List all indexing jobs. Optionally filter by status.",

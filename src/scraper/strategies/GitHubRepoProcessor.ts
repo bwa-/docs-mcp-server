@@ -1,3 +1,4 @@
+import type { AppConfig } from "../../utils/config";
 import { logger } from "../../utils/logger";
 import { MimeTypeUtils } from "../../utils/mimeTypeUtils";
 import { HttpFetcher } from "../fetcher";
@@ -37,11 +38,12 @@ export interface GitHubTreeResponse {
  * This processor is stateless and contains the core logic from GitHubRepoScraperStrategy.
  */
 export class GitHubRepoProcessor {
-  private readonly httpFetcher = new HttpFetcher();
+  private readonly httpFetcher: HttpFetcher;
   private readonly pipelines: ContentPipeline[];
 
-  constructor() {
-    this.pipelines = PipelineFactory.createStandardPipelines();
+  constructor(config: AppConfig) {
+    this.httpFetcher = new HttpFetcher(config.scraper);
+    this.pipelines = PipelineFactory.createStandardPipelines(config);
   }
 
   /**
@@ -74,16 +76,21 @@ export class GitHubRepoProcessor {
     repoInfo: GitHubRepoInfo,
     filePath: string,
     etag?: string | null,
+    headers?: Record<string, string>,
     signal?: AbortSignal,
   ): Promise<RawContent> {
     const { owner, repo, branch } = repoInfo;
     const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`;
 
-    const rawContent = await this.httpFetcher.fetch(rawUrl, { signal, etag });
+    const rawContent = await this.httpFetcher.fetch(rawUrl, { signal, etag, headers });
 
-    // Override GitHub's generic 'text/plain' MIME type with file extension-based detection
+    // Override GitHub's generic 'text/plain' or 'application/octet-stream' MIME type with file extension-based detection
     const detectedMimeType = MimeTypeUtils.detectMimeTypeFromPath(filePath);
-    if (detectedMimeType && rawContent.mimeType === "text/plain") {
+    if (
+      detectedMimeType &&
+      (rawContent.mimeType === "text/plain" ||
+        rawContent.mimeType === "application/octet-stream")
+    ) {
       return {
         ...rawContent,
         mimeType: detectedMimeType,
@@ -99,6 +106,7 @@ export class GitHubRepoProcessor {
   async process(
     item: QueueItem,
     options: ScraperOptions,
+    headers?: Record<string, string>,
     signal?: AbortSignal,
   ): Promise<ProcessItemResult> {
     // Parse the HTTPS blob URL to extract repository info and file path
@@ -110,6 +118,7 @@ export class GitHubRepoProcessor {
       { owner, repo, branch },
       filePath,
       item.etag,
+      headers,
       signal,
     );
 

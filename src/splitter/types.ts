@@ -1,7 +1,16 @@
 /**
  * Types of content within a document section
  */
-export type SectionContentType = "text" | "code" | "table" | "heading" | "structural";
+export type SectionContentType =
+  | "text"
+  | "code"
+  | "table"
+  | "heading"
+  | "structural"
+  | "frontmatter"
+  | "list"
+  | "blockquote"
+  | "media";
 
 /**
  * Final output chunk after processing and size-based splitting
@@ -13,6 +22,20 @@ export interface Chunk {
     level: number;
     path: string[];
   };
+}
+
+/**
+ * Configuration for document splitting
+ */
+export interface SplitterConfig {
+  minChunkSize: number;
+  preferredChunkSize: number;
+  maxChunkSize: number;
+  json?: {
+    maxNestingDepth: number;
+    maxChunks: number;
+  };
+  treeSitterSizeLimit?: number;
 }
 
 /**

@@ -19,6 +19,7 @@ import { EventBusService } from "../events/EventBusService";
 import type { ScraperProgressEvent } from "../scraper/types";
 import type { DocumentManagementService } from "../store/DocumentManagementService";
 import { ListJobsTool } from "../tools/ListJobsTool";
+import { type AppConfig, loadConfig } from "../utils/config";
 import { PipelineManager } from "./PipelineManager";
 import { PipelineWorker } from "./PipelineWorker";
 import type { InternalPipelineJob, PipelineJob, PipelineManagerCallbacks } from "./types";
@@ -35,6 +36,7 @@ describe("PipelineManager", () => {
   let mockWorkerInstance: { executeJob: Mock };
   let manager: PipelineManager;
   let mockCallbacks: PipelineManagerCallbacks;
+  let appConfig: AppConfig;
 
   // Helper to create a minimal test job with required fields
   const createTestJob = (overrides: Partial<PipelineJob> = {}): PipelineJob => ({
@@ -146,12 +148,13 @@ describe("PipelineManager", () => {
     // Create mock EventBusService
     const mockEventBus = new EventBusService();
 
+    appConfig = loadConfig();
+    appConfig.scraper.maxConcurrency = 1;
+
     // Default concurrency of 1 for simpler testing unless overridden
-    manager = new PipelineManager(
-      mockStore as DocumentManagementService,
-      mockEventBus,
-      1, // Default to 1 for easier sequential testing
-    );
+    manager = new PipelineManager(mockStore as DocumentManagementService, mockEventBus, {
+      appConfig: appConfig,
+    });
     manager.setCallbacks(mockCallbacks);
   });
 
@@ -313,11 +316,10 @@ describe("PipelineManager", () => {
 
   it("should run jobs in parallel if concurrency > 1", async () => {
     const mockEventBus = new EventBusService();
-    manager = new PipelineManager(
-      mockStore as DocumentManagementService,
-      mockEventBus,
-      2,
-    );
+    appConfig.scraper.maxConcurrency = 2;
+    manager = new PipelineManager(mockStore as DocumentManagementService, mockEventBus, {
+      appConfig: appConfig,
+    });
     manager.setCallbacks(mockCallbacks);
     const optionsA = { url: "http://a.com", library: "libA", version: "1.0" };
     const optionsB = { url: "http://b.com", library: "libB", version: "1.0" };
@@ -451,56 +453,79 @@ describe("PipelineManager", () => {
       expect(mockStore.updateVersionStatus).toHaveBeenCalledWith(1, "queued", undefined);
     });
 
-    it("should recover pending jobs from database on start", async () => {
-      const mockQueuedVersions = [
+    it("should recover pending jobs from database on start using enqueueRefreshJob", async () => {
+      const mockInterruptedVersions = [
         {
           id: 1,
           library_name: "test-lib",
           name: "1.0.0",
+          status: "running",
           created_at: "2025-01-01T00:00:00.000Z",
-          started_at: null,
+          updated_at: "2025-01-01T00:01:00.000Z",
         },
         {
           id: 2,
           library_name: "interrupted-lib",
           name: "2.0.0",
+          status: "queued",
           created_at: "2025-01-01T00:00:00.000Z",
-          started_at: "2025-01-01T00:01:00.000Z",
-        },
-      ];
-      const mockRunningVersions = [
-        {
-          id: 2,
-          library_name: "interrupted-lib",
-          name: "2.0.0",
-          created_at: "2025-01-01T00:00:00.000Z",
-          started_at: "2025-01-01T00:01:00.000Z",
+          updated_at: "2025-01-01T00:00:00.000Z",
         },
       ];
 
-      // Create fresh mock store for this test to avoid interference
+      // Create fresh mock store with all methods needed for enqueueRefreshJob
       const recoveryMockStore = {
         ensureLibraryAndVersion: vi.fn().mockResolvedValue(1),
         updateVersionStatus: vi.fn().mockResolvedValue(undefined),
-        getVersionsByStatus: vi.fn().mockImplementation((statuses: string[]) => {
-          if (statuses.includes("running")) return Promise.resolve(mockRunningVersions);
-          if (statuses.includes("queued")) return Promise.resolve(mockQueuedVersions);
-          return Promise.resolve([]);
+        updateVersionProgress: vi.fn().mockResolvedValue(undefined),
+        getVersionsByStatus: vi.fn().mockResolvedValue(mockInterruptedVersions),
+        ensureVersion: vi.fn().mockImplementation(({ library }) => {
+          return Promise.resolve(library === "test-lib" ? 1 : 2);
         }),
+        getVersionById: vi.fn().mockImplementation((id: number) => {
+          return Promise.resolve({
+            id,
+            library_id: id,
+            name: id === 1 ? "1.0.0" : "2.0.0",
+            status: id === 1 ? "running" : "queued",
+            created_at: "2025-01-01T00:00:00.000Z",
+            updated_at: "2025-01-01T00:01:00.000Z",
+          });
+        }),
+        getLibraryById: vi.fn().mockImplementation((id: number) => {
+          return Promise.resolve({
+            id,
+            name: id === 1 ? "test-lib" : "interrupted-lib",
+          });
+        }),
+        getPagesByVersionId: vi.fn().mockResolvedValue([]),
+        getScraperOptions: vi.fn().mockResolvedValue({
+          sourceUrl: "https://example.com",
+          options: { maxDepth: 2 },
+        }),
+        storeScraperOptions: vi.fn().mockResolvedValue(undefined),
       };
 
       const mockEventBus = new EventBusService();
+      appConfig.scraper.maxConcurrency = 1;
       const recoveryManager = new PipelineManager(
         recoveryMockStore as any,
         mockEventBus,
-        1,
+        {
+          recoverJobs: true, // Explicitly enable recovery
+          appConfig: appConfig,
+        },
       );
+
+      const enqueueRefreshSpy = vi.spyOn(recoveryManager, "enqueueRefreshJob");
+
       await recoveryManager.start();
 
-      // Should reset RUNNING job to QUEUED
-      expect(recoveryMockStore.updateVersionStatus).toHaveBeenCalledWith(2, "queued");
+      // Should have called enqueueRefreshJob for both interrupted versions
+      expect(enqueueRefreshSpy).toHaveBeenCalledWith("test-lib", "1.0.0");
+      expect(enqueueRefreshSpy).toHaveBeenCalledWith("interrupted-lib", "2.0.0");
 
-      // Should have loaded both jobs (the originally QUEUED one + the reset one)
+      // Should have loaded both jobs into the in-memory queue
       const allJobs = await recoveryManager.getJobs();
       expect(allJobs).toHaveLength(2);
       expect(
@@ -549,38 +574,6 @@ describe("PipelineManager", () => {
   });
 
   describe("cleanup functionality", () => {
-    it("should call cleanup on scraper service when stopped", async () => {
-      // Access the actual scraperService and spy on its cleanup method
-      const scraperService = (manager as any).scraperService;
-      const cleanupSpy = vi.spyOn(scraperService, "cleanup").mockResolvedValue(undefined);
-
-      // Start the manager
-      await manager.start();
-
-      // Call stop
-      await manager.stop();
-
-      // Verify cleanup was called on scraper service
-      expect(cleanupSpy).toHaveBeenCalled();
-    });
-
-    it("should handle cleanup errors gracefully during stop", async () => {
-      // Access the actual scraperService and spy on its cleanup method to throw error
-      const scraperService = (manager as any).scraperService;
-      const cleanupSpy = vi
-        .spyOn(scraperService, "cleanup")
-        .mockRejectedValue(new Error("Cleanup failed"));
-
-      // Start the manager
-      await manager.start();
-
-      // Stop should throw if cleanup fails
-      await expect(manager.stop()).rejects.toThrow("Cleanup failed");
-
-      // Verify cleanup was attempted
-      expect(cleanupSpy).toHaveBeenCalled();
-    });
-
     it("should stop accepting new jobs after stop is called", async () => {
       // Start the manager
       await manager.start();
@@ -611,19 +604,6 @@ describe("PipelineManager", () => {
 
       // Should be able to call stop multiple times without issues
       await expect(manager.stop()).resolves.toBeUndefined();
-    });
-
-    it("should ensure resource cleanup chain is properly invoked", async () => {
-      // Access the actual scraperService and spy on its cleanup method
-      const scraperService = (manager as any).scraperService;
-      const cleanupSpy = vi.spyOn(scraperService, "cleanup").mockResolvedValue(undefined);
-
-      // Start and stop the manager
-      await manager.start();
-      await manager.stop();
-
-      // Verify the cleanup chain was invoked
-      expect(cleanupSpy).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -867,6 +847,285 @@ describe("PipelineManager", () => {
       expect(job).toBeDefined();
       expect(job?.library).toBe("completed-lib");
       expect(job?.version).toBe("3.0.0");
+    });
+  });
+
+  // --- Interrupted Job Recovery Tests (Issue #317) ---
+  describe("Interrupted Job Recovery", () => {
+    describe("when recoverJobs is false", () => {
+      it("should mark RUNNING jobs as FAILED with 'Job interrupted' message", async () => {
+        const mockRunningVersions = [
+          {
+            id: 1,
+            library_name: "interrupted-lib",
+            name: "1.0.0",
+            status: "running",
+            created_at: "2025-01-01T00:00:00.000Z",
+            updated_at: "2025-01-01T00:01:00.000Z",
+          },
+        ];
+
+        const recoveryMockStore = {
+          ensureLibraryAndVersion: vi.fn().mockResolvedValue(1),
+          updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+          getVersionsByStatus: vi.fn().mockImplementation((statuses: string[]) => {
+            if (statuses.includes("running") || statuses.includes("queued")) {
+              return Promise.resolve(mockRunningVersions);
+            }
+            return Promise.resolve([]);
+          }),
+        };
+
+        const mockEventBus = new EventBusService();
+        const recoveryManager = new PipelineManager(
+          recoveryMockStore as any,
+          mockEventBus,
+          {
+            recoverJobs: false,
+            appConfig: appConfig,
+          },
+        );
+
+        await recoveryManager.start();
+
+        // Should mark the interrupted job as FAILED
+        expect(recoveryMockStore.updateVersionStatus).toHaveBeenCalledWith(
+          1,
+          "failed",
+          "Job interrupted",
+        );
+
+        // Should NOT have any jobs in the in-memory queue
+        const jobs = await recoveryManager.getJobs();
+        expect(jobs).toHaveLength(0);
+
+        await recoveryManager.stop();
+      });
+
+      it("should mark QUEUED jobs as FAILED with 'Job interrupted' message", async () => {
+        const mockQueuedVersions = [
+          {
+            id: 2,
+            library_name: "queued-lib",
+            name: "2.0.0",
+            status: "queued",
+            created_at: "2025-01-01T00:00:00.000Z",
+            updated_at: "2025-01-01T00:00:00.000Z",
+          },
+        ];
+
+        const recoveryMockStore = {
+          ensureLibraryAndVersion: vi.fn().mockResolvedValue(2),
+          updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+          getVersionsByStatus: vi.fn().mockImplementation((statuses: string[]) => {
+            if (statuses.includes("running") || statuses.includes("queued")) {
+              return Promise.resolve(mockQueuedVersions);
+            }
+            return Promise.resolve([]);
+          }),
+        };
+
+        const mockEventBus = new EventBusService();
+        const recoveryManager = new PipelineManager(
+          recoveryMockStore as any,
+          mockEventBus,
+          {
+            recoverJobs: false,
+            appConfig: appConfig,
+          },
+        );
+
+        await recoveryManager.start();
+
+        // Should mark the queued job as FAILED
+        expect(recoveryMockStore.updateVersionStatus).toHaveBeenCalledWith(
+          2,
+          "failed",
+          "Job interrupted",
+        );
+
+        await recoveryManager.stop();
+      });
+
+      it("should mark multiple interrupted jobs as FAILED", async () => {
+        const mockInterruptedVersions = [
+          {
+            id: 1,
+            library_name: "lib-a",
+            name: "1.0.0",
+            status: "running",
+            created_at: "2025-01-01T00:00:00.000Z",
+            updated_at: "2025-01-01T00:01:00.000Z",
+          },
+          {
+            id: 2,
+            library_name: "lib-b",
+            name: "2.0.0",
+            status: "queued",
+            created_at: "2025-01-01T00:00:00.000Z",
+            updated_at: "2025-01-01T00:00:00.000Z",
+          },
+        ];
+
+        const recoveryMockStore = {
+          ensureLibraryAndVersion: vi.fn().mockResolvedValue(1),
+          updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+          getVersionsByStatus: vi.fn().mockResolvedValue(mockInterruptedVersions),
+        };
+
+        const mockEventBus = new EventBusService();
+        const recoveryManager = new PipelineManager(
+          recoveryMockStore as any,
+          mockEventBus,
+          {
+            recoverJobs: false,
+            appConfig: appConfig,
+          },
+        );
+
+        await recoveryManager.start();
+
+        // Should mark both jobs as FAILED
+        expect(recoveryMockStore.updateVersionStatus).toHaveBeenCalledWith(
+          1,
+          "failed",
+          "Job interrupted",
+        );
+        expect(recoveryMockStore.updateVersionStatus).toHaveBeenCalledWith(
+          2,
+          "failed",
+          "Job interrupted",
+        );
+
+        await recoveryManager.stop();
+      });
+    });
+
+    describe("when recoverJobs is true", () => {
+      it("should use enqueueRefreshJob for recovery", async () => {
+        const mockRunningVersions = [
+          {
+            id: 1,
+            library_name: "interrupted-lib",
+            name: "1.0.0",
+            status: "running",
+            created_at: "2025-01-01T00:00:00.000Z",
+            updated_at: "2025-01-01T00:01:00.000Z",
+            source_url: "https://example.com",
+            scraper_options: JSON.stringify({ url: "https://example.com" }),
+          },
+        ];
+
+        const recoveryMockStore = {
+          ensureLibraryAndVersion: vi.fn().mockResolvedValue(1),
+          updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+          updateVersionProgress: vi.fn().mockResolvedValue(undefined),
+          getVersionsByStatus: vi.fn().mockImplementation((statuses: string[]) => {
+            if (statuses.includes("running") || statuses.includes("queued")) {
+              return Promise.resolve(mockRunningVersions);
+            }
+            return Promise.resolve([]);
+          }),
+          ensureVersion: vi.fn().mockResolvedValue(1),
+          getVersionById: vi.fn().mockResolvedValue({
+            id: 1,
+            library_id: 1,
+            name: "1.0.0",
+            status: "running",
+            created_at: "2025-01-01T00:00:00.000Z",
+            updated_at: "2025-01-01T00:01:00.000Z",
+          }),
+          getLibraryById: vi.fn().mockResolvedValue({
+            id: 1,
+            name: "interrupted-lib",
+          }),
+          getPagesByVersionId: vi.fn().mockResolvedValue([]),
+          getScraperOptions: vi.fn().mockResolvedValue({
+            sourceUrl: "https://example.com",
+            options: { maxDepth: 2 },
+          }),
+          storeScraperOptions: vi.fn().mockResolvedValue(undefined),
+        };
+
+        const mockEventBus = new EventBusService();
+        const recoveryManager = new PipelineManager(
+          recoveryMockStore as any,
+          mockEventBus,
+          {
+            recoverJobs: true,
+            appConfig: appConfig,
+          },
+        );
+
+        const enqueueRefreshSpy = vi.spyOn(recoveryManager, "enqueueRefreshJob");
+
+        await recoveryManager.start();
+
+        // Should have called enqueueRefreshJob for recovery
+        expect(enqueueRefreshSpy).toHaveBeenCalledWith("interrupted-lib", "1.0.0");
+
+        await recoveryManager.stop();
+      });
+
+      it("should mark job as FAILED when recovery fails", async () => {
+        const mockRunningVersions = [
+          {
+            id: 1,
+            library_name: "no-options-lib",
+            name: "1.0.0",
+            status: "running",
+            created_at: "2025-01-01T00:00:00.000Z",
+            updated_at: "2025-01-01T00:01:00.000Z",
+          },
+        ];
+
+        const recoveryMockStore = {
+          ensureLibraryAndVersion: vi.fn().mockResolvedValue(1),
+          updateVersionStatus: vi.fn().mockResolvedValue(undefined),
+          getVersionsByStatus: vi.fn().mockImplementation((statuses: string[]) => {
+            if (statuses.includes("running") || statuses.includes("queued")) {
+              return Promise.resolve(mockRunningVersions);
+            }
+            return Promise.resolve([]);
+          }),
+          ensureVersion: vi.fn().mockResolvedValue(1),
+          getVersionById: vi.fn().mockResolvedValue({
+            id: 1,
+            library_id: 1,
+            name: "1.0.0",
+            status: "running",
+            created_at: "2025-01-01T00:00:00.000Z",
+            updated_at: "2025-01-01T00:01:00.000Z",
+          }),
+          getLibraryById: vi.fn().mockResolvedValue({
+            id: 1,
+            name: "no-options-lib",
+          }),
+          getPagesByVersionId: vi.fn().mockResolvedValue([]),
+          getScraperOptions: vi.fn().mockResolvedValue(null), // No stored options
+        };
+
+        const mockEventBus = new EventBusService();
+        const recoveryManager = new PipelineManager(
+          recoveryMockStore as any,
+          mockEventBus,
+          {
+            recoverJobs: true,
+            appConfig: appConfig,
+          },
+        );
+
+        await recoveryManager.start();
+
+        // Should mark the job as FAILED with error message
+        expect(recoveryMockStore.updateVersionStatus).toHaveBeenCalledWith(
+          1,
+          "failed",
+          expect.stringContaining("Recovery failed"),
+        );
+
+        await recoveryManager.stop();
+      });
     });
   });
 });

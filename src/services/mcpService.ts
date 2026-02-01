@@ -14,6 +14,7 @@ import { initializeTools } from "../mcp/tools";
 import type { IPipeline } from "../pipeline/trpc/interfaces";
 import type { IDocumentManagement } from "../store/trpc/interfaces";
 import { telemetry } from "../telemetry";
+import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
 
 /**
@@ -23,19 +24,20 @@ import { logger } from "../utils/logger";
  * @param server The Fastify server instance
  * @param docService The document management service
  * @param pipeline The pipeline instance
- * @param readOnly Whether to run in read-only mode
+ * @param config The resolved configuration from the entrypoint
+ * @param authManager Optional authentication manager
  * @returns The McpServer instance for cleanup
  */
 export async function registerMcpService(
   server: FastifyInstance,
   docService: IDocumentManagement,
   pipeline: IPipeline,
-  readOnly = false,
+  config: AppConfig,
   authManager?: ProxyAuthManager,
 ): Promise<McpServer> {
   // Initialize MCP server and tools
-  const mcpTools = await initializeTools(docService, pipeline);
-  const mcpServer = createMcpServerInstance(mcpTools, readOnly);
+  const mcpTools = await initializeTools(docService, pipeline, config);
+  const mcpServer = createMcpServerInstance(mcpTools, config);
 
   // Setup auth middleware if auth manager is provided
   const authMiddleware = authManager ? createAuthMiddleware(authManager) : null;
@@ -43,11 +45,11 @@ export async function registerMcpService(
   // Track SSE transports for cleanup
   const sseTransports: Record<string, SSEServerTransport> = {};
 
+  // Track SSE server instances for cleanup
+  const sseServers: Record<string, McpServer> = {};
+
   // Track heartbeat intervals for cleanup
   const heartbeatIntervals: Record<string, NodeJS.Timeout> = {};
-
-  // Heartbeat interval in milliseconds (30 seconds)
-  const HEARTBEAT_INTERVAL_MS = 30_000;
 
   // SSE endpoint for MCP connections
   server.route({
@@ -59,6 +61,9 @@ export async function registerMcpService(
         // Handle SSE connection using raw response
         const transport = new SSEServerTransport("/messages", reply.raw);
         sseTransports[transport.sessionId] = transport;
+
+        const sessionServer = createMcpServerInstance(mcpTools, config);
+        sseServers[transport.sessionId] = sessionServer;
 
         // Log client connection (simple connection tracking without sessions)
         if (telemetry.isEnabled()) {
@@ -75,7 +80,7 @@ export async function registerMcpService(
             clearInterval(heartbeatInterval);
             delete heartbeatIntervals[transport.sessionId];
           }
-        }, HEARTBEAT_INTERVAL_MS);
+        }, config.server.heartbeatMs);
         heartbeatIntervals[transport.sessionId] = heartbeatInterval;
 
         // Cleanup function to handle both close and error scenarios
@@ -84,6 +89,14 @@ export async function registerMcpService(
           if (interval) {
             clearInterval(interval);
             delete heartbeatIntervals[transport.sessionId];
+          }
+
+          const serverToClose = sseServers[transport.sessionId];
+          if (serverToClose) {
+            delete sseServers[transport.sessionId];
+            void serverToClose.close().catch((error) => {
+              logger.error(`❌ Failed to close SSE server instance: ${error}`);
+            });
           }
 
           delete sseTransports[transport.sessionId];
@@ -103,7 +116,7 @@ export async function registerMcpService(
           cleanupConnection();
         });
 
-        await mcpServer.connect(transport);
+        await sessionServer.connect(transport);
       } catch (error) {
         logger.error(`❌ Error in SSE endpoint: ${error}`);
         reply.code(500).send({
@@ -145,7 +158,7 @@ export async function registerMcpService(
     handler: async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         // In stateless mode, create a new instance of server and transport for each request
-        const requestServer = createMcpServerInstance(mcpTools, readOnly);
+        const requestServer = createMcpServerInstance(mcpTools, config);
         const requestTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: undefined,
         });
@@ -173,13 +186,28 @@ export async function registerMcpService(
     },
   });
 
+  server.route({
+    method: "GET",
+    url: "/mcp",
+    preHandler: authMiddleware ? [authMiddleware] : undefined,
+    handler: async (_request: FastifyRequest, reply: FastifyReply) => {
+      reply.code(405).header("Allow", "POST").send();
+    },
+  });
+
   // Store reference to SSE transports on the server instance for cleanup
   (
     mcpServer as unknown as {
       _sseTransports: Record<string, SSEServerTransport>;
+      _sseServers: Record<string, McpServer>;
       _heartbeatIntervals: Record<string, NodeJS.Timeout>;
     }
   )._sseTransports = sseTransports;
+  (
+    mcpServer as unknown as {
+      _sseServers: Record<string, McpServer>;
+    }
+  )._sseServers = sseServers;
   (
     mcpServer as unknown as {
       _heartbeatIntervals: Record<string, NodeJS.Timeout>;
@@ -215,6 +243,17 @@ export async function cleanupMcpService(mcpServer: McpServer): Promise<void> {
     if (sseTransports) {
       for (const transport of Object.values(sseTransports)) {
         await transport.close();
+      }
+    }
+
+    const sseServers = (
+      mcpServer as unknown as {
+        _sseServers: Record<string, McpServer>;
+      }
+    )._sseServers;
+    if (sseServers) {
+      for (const server of Object.values(sseServers)) {
+        await server.close();
       }
     }
 

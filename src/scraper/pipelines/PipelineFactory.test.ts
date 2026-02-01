@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { SPLITTER_PREFERRED_CHUNK_SIZE } from "../../utils/config";
+import { defaults, loadConfig } from "../../utils/config";
+import { DocumentPipeline } from "./DocumentPipeline";
 import { HtmlPipeline } from "./HtmlPipeline";
 import { JsonPipeline } from "./JsonPipeline";
 import { MarkdownPipeline } from "./MarkdownPipeline";
@@ -8,72 +9,45 @@ import { SourceCodePipeline } from "./SourceCodePipeline";
 import { TextPipeline } from "./TextPipeline";
 
 describe("PipelineFactory", () => {
-  describe("createStandardPipelines", () => {
-    it("should create all five standard pipelines", () => {
-      const pipelines = PipelineFactory.createStandardPipelines();
+  const appConfig = loadConfig();
 
-      expect(pipelines).toHaveLength(5);
+  describe("createStandardPipelines", () => {
+    it("should create all six standard pipelines", () => {
+      const pipelines = PipelineFactory.createStandardPipelines(appConfig);
+
+      expect(pipelines).toHaveLength(6);
       expect(pipelines[0]).toBeInstanceOf(JsonPipeline);
       expect(pipelines[1]).toBeInstanceOf(SourceCodePipeline);
-      expect(pipelines[2]).toBeInstanceOf(HtmlPipeline);
-      expect(pipelines[3]).toBeInstanceOf(MarkdownPipeline);
-      expect(pipelines[4]).toBeInstanceOf(TextPipeline);
+      expect(pipelines[2]).toBeInstanceOf(DocumentPipeline);
+      expect(pipelines[3]).toBeInstanceOf(HtmlPipeline);
+      expect(pipelines[4]).toBeInstanceOf(MarkdownPipeline);
+      expect(pipelines[5]).toBeInstanceOf(TextPipeline);
     });
 
     it("should create new instances each time", () => {
-      const pipelines1 = PipelineFactory.createStandardPipelines();
-      const pipelines2 = PipelineFactory.createStandardPipelines();
+      const pipelines1 = PipelineFactory.createStandardPipelines(appConfig);
+      const pipelines2 = PipelineFactory.createStandardPipelines(appConfig);
 
       expect(pipelines1[0]).not.toBe(pipelines2[0]);
       expect(pipelines1[1]).not.toBe(pipelines2[1]);
       expect(pipelines1[2]).not.toBe(pipelines2[2]);
       expect(pipelines1[3]).not.toBe(pipelines2[3]);
       expect(pipelines1[4]).not.toBe(pipelines2[4]);
+      expect(pipelines1[5]).not.toBe(pipelines2[5]);
     });
   });
 
   describe("configuration", () => {
     it("should use default chunk sizes when no configuration provided", () => {
-      const pipelines = PipelineFactory.createStandardPipelines();
-      expect(pipelines).toHaveLength(5);
+      const pipelines = PipelineFactory.createStandardPipelines(appConfig);
+      expect(pipelines).toHaveLength(6);
       // Test passes if no errors are thrown during pipeline creation
     });
 
-    it("should accept custom chunk sizes configuration", () => {
-      const config = {
-        chunkSizes: {
-          preferred: 800,
-          max: 1600,
-        },
-      };
-
-      const pipelines = PipelineFactory.createStandardPipelines(config);
-      expect(pipelines).toHaveLength(5);
-      expect(pipelines[0]).toBeInstanceOf(JsonPipeline);
-      expect(pipelines[1]).toBeInstanceOf(SourceCodePipeline);
-      expect(pipelines[2]).toBeInstanceOf(HtmlPipeline);
-      expect(pipelines[3]).toBeInstanceOf(MarkdownPipeline);
-      expect(pipelines[4]).toBeInstanceOf(TextPipeline);
-    });
-
-    it("should use default values when configuration is partially provided", () => {
-      const config = {
-        chunkSizes: {
-          preferred: 800,
-          // max is omitted - should use default
-        },
-      };
-
-      const pipelines = PipelineFactory.createStandardPipelines(config);
-      expect(pipelines).toHaveLength(5);
-      // Test passes if no errors are thrown during pipeline creation
-    });
-
-    it("should use constants as defaults when configuration is undefined", () => {
-      const pipelines = PipelineFactory.createStandardPipelines(undefined);
-      expect(pipelines).toHaveLength(5);
-      // Verify that the default constant is being used implicitly
-      expect(SPLITTER_PREFERRED_CHUNK_SIZE).toBe(1500);
+    it("should use constants as defaults", () => {
+      const pipelines = PipelineFactory.createStandardPipelines(appConfig);
+      expect(pipelines).toHaveLength(6);
+      expect(defaults.splitter.preferredChunkSize).toBe(1500);
     });
   });
 });

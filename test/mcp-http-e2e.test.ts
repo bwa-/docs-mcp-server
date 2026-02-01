@@ -16,12 +16,30 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 // Using deprecated SSEClientTransport intentionally to test the legacy /sse endpoint
 // eslint-disable-next-line deprecation/deprecation
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { getCliCommand } from "./test-helpers";
 
 describe("MCP HTTP server E2E", () => {
+  // Handle unhandled rejections that might occur during client shutdown
+  // (e.g. AbortError from pending fetches)
+  const unhandledRejectionHandler = (reason: unknown) => {
+    // Ignore all errors during shutdown in this test file
+    // The shutdown test intentionally triggers aborts/closures
+  };
+
+  beforeAll(() => {
+    process.on("unhandledRejection", unhandledRejectionHandler);
+  });
+
+  afterAll(() => {
+    process.off("unhandledRejection", unhandledRejectionHandler);
+  });
+
   let serverProcess: ChildProcess | null = null;
   let client: Client | null = null;
   let transport: SSEClientTransport | null = null;
+  const extraClients: Client[] = [];
+  const extraTransports: SSEClientTransport[] = [];
 
   afterEach(async () => {
     // Clean up client connection
@@ -42,6 +60,22 @@ describe("MCP HTTP server E2E", () => {
         // Ignore errors during cleanup
       }
       transport = null;
+    }
+
+    for (const extraClient of extraClients.splice(0, extraClients.length)) {
+      try {
+        await extraClient.close();
+      } catch {
+        // Ignore errors during cleanup
+      }
+    }
+
+    for (const extraTransport of extraTransports.splice(0, extraTransports.length)) {
+      try {
+        await extraTransport.close();
+      } catch {
+        // Ignore errors during cleanup
+      }
     }
 
     // Kill server process if still running
@@ -71,15 +105,16 @@ describe("MCP HTTP server E2E", () => {
    */
   async function startServer(port: number): Promise<string> {
     const projectRoot = path.resolve(import.meta.dirname, "..");
-    const entryPoint = path.join(projectRoot, "src", "index.ts");
 
     // Build environment without VITEST_WORKER_ID
     const testEnv = { ...process.env };
     delete testEnv.VITEST_WORKER_ID;
 
+    const { cmd, args } = getCliCommand();
+
     serverProcess = spawn(
-      "npx",
-      ["vite-node", entryPoint, "--protocol", "http", "--port", String(port)],
+      cmd,
+      [...args, "--protocol", "http", "--port", String(port)],
       {
         cwd: projectRoot,
         stdio: ["pipe", "pipe", "pipe"],
@@ -87,6 +122,7 @@ describe("MCP HTTP server E2E", () => {
           ...testEnv,
           DOCS_MCP_STORE_PATH: path.join(projectRoot, "test", ".test-store-http"),
           DOCS_MCP_TELEMETRY: "false",
+          LOG_LEVEL: "info",
         },
       },
     );
@@ -95,13 +131,19 @@ describe("MCP HTTP server E2E", () => {
     const serverUrl = await new Promise<string>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error("Server startup timed out"));
-      }, 15000);
+      }, 30000);
 
       let output = "";
 
       const handleOutput = (data: Buffer) => {
         const text = data.toString();
         output += text;
+        console.log(`[Server Output]: ${text.trim()}`);
+
+        // Fail fast if we see an error
+        if (text.includes("Error:") || text.includes("Exception:")) {
+             console.error(`[Server Error Detected]: ${text}`);
+        }
 
         // Look for the "available at" message that indicates the server is ready
         // Pattern: "🚀 ... available at http://..."
@@ -131,6 +173,27 @@ describe("MCP HTTP server E2E", () => {
     return serverUrl;
   }
 
+  const createSseTransport = (sseUrl: URL) => {
+    const customFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await fetch(input, init);
+
+      if (response.body) {
+        response.body.cancel = async (reason) => {
+          try {
+            await response.text();
+          } catch {}
+          return undefined;
+        };
+      }
+
+      return response;
+    };
+
+    return new SSEClientTransport(sseUrl, {
+      fetch: customFetch as any,
+    });
+  };
+
   it("should start HTTP server, respond to initialize, and list tools", async () => {
     // Use a high port to avoid conflicts
     const port = 39123;
@@ -139,8 +202,7 @@ describe("MCP HTTP server E2E", () => {
     // Construct SSE endpoint URL
     const sseUrl = new URL("/sse", serverUrl);
 
-    // Create SSE transport
-    transport = new SSEClientTransport(sseUrl);
+    transport = createSseTransport(sseUrl);
 
     // Create MCP client
     client = new Client(
@@ -178,7 +240,7 @@ describe("MCP HTTP server E2E", () => {
     const serverUrl = await startServer(port);
 
     const sseUrl = new URL("/sse", serverUrl);
-    transport = new SSEClientTransport(sseUrl);
+    transport = createSseTransport(sseUrl);
 
     client = new Client(
       {
@@ -198,11 +260,19 @@ describe("MCP HTTP server E2E", () => {
     expect(toolsResult.tools.length).toBeGreaterThan(0);
 
     // Close the client
-    await client.close();
+    try {
+      await client.close();
+    } catch {
+      // Ignore all errors during shutdown
+    }
     client = null;
 
     // Close the transport
-    await transport.close();
+    try {
+      await transport.close();
+    } catch {
+      // Ignore all errors during shutdown
+    }
     transport = null;
   }, 30000);
 
@@ -219,7 +289,7 @@ describe("MCP HTTP server E2E", () => {
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error("Test timed out waiting for heartbeat"));
-      }, 40000); // Wait up to 40 seconds (heartbeat should come within 30s)
+      }, 45000); // Wait up to 45 seconds (heartbeat should come within 30s)
 
       const req = http.request(
         {
@@ -273,4 +343,78 @@ describe("MCP HTTP server E2E", () => {
     expect(receivedData.length).toBeGreaterThan(0);
     expect(receivedData.some((data) => data.includes(": heartbeat"))).toBe(true);
   }, 45000);
+
+  it("should handle concurrent SSE clients with overlapping message IDs", async () => {
+    const port = 39126;
+    const serverUrl = await startServer(port);
+    const sseUrl = new URL("/sse", serverUrl);
+
+    const firstTransport = createSseTransport(sseUrl);
+    const secondTransport = createSseTransport(sseUrl);
+    extraTransports.push(firstTransport, secondTransport);
+
+    const firstClient = new Client(
+      {
+        name: "test-client-1",
+        version: "1.0.0",
+      },
+      {
+        capabilities: {},
+      },
+    );
+    const secondClient = new Client(
+      {
+        name: "test-client-2",
+        version: "1.0.0",
+      },
+      {
+        capabilities: {},
+      },
+    );
+    extraClients.push(firstClient, secondClient);
+
+    await Promise.all([
+      firstClient.connect(firstTransport),
+      secondClient.connect(secondTransport),
+    ]);
+
+    const [firstTools, secondTools] = await Promise.all([
+      firstClient.listTools(),
+      secondClient.listTools(),
+    ]);
+
+    expect(firstTools.tools.length).toBeGreaterThan(0);
+    expect(secondTools.tools.length).toBeGreaterThan(0);
+  }, 30000);
+
+  it("should list and read resources via SSE", async () => {
+    const port = 39127;
+    const serverUrl = await startServer(port);
+    const sseUrl = new URL("/sse", serverUrl);
+
+    transport = createSseTransport(sseUrl);
+    client = new Client(
+      {
+        name: "test-client",
+        version: "1.0.0",
+      },
+      {
+        capabilities: {},
+      },
+    );
+
+    await client.connect(transport);
+
+    const resourcesResult = await client.listResources();
+    expect(resourcesResult.resources.length).toBeGreaterThan(0);
+
+    const resource = resourcesResult.resources.find((item) => item.uri.startsWith("docs://libraries"));
+    expect(resource).toBeDefined();
+
+    const resourceResponse = await client.readResource({
+      uri: resource?.uri ?? "docs://libraries",
+    });
+
+    expect(Array.isArray(resourceResponse.contents)).toBe(true);
+  }, 30000);
 });

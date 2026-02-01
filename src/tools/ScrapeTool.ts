@@ -1,11 +1,7 @@
 import * as semver from "semver";
 import type { IPipeline } from "../pipeline/trpc/interfaces";
 import { ScrapeMode } from "../scraper/types";
-import {
-  DEFAULT_MAX_CONCURRENCY,
-  DEFAULT_MAX_DEPTH,
-  DEFAULT_MAX_PAGES,
-} from "../utils/config";
+import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
 import { ValidationError } from "./errors";
 
@@ -56,6 +52,12 @@ export interface ScrapeToolOptions {
      * Keys are header names, values are header values.
      */
     headers?: Record<string, string>;
+    /**
+     * If true, clears existing documents for the library version before scraping.
+     * If false, appends to the existing documents.
+     * @default true
+     */
+    clean?: boolean;
   };
   /** If false, returns jobId immediately without waiting. Defaults to true. */
   waitForCompletion?: boolean;
@@ -74,9 +76,11 @@ export type ScrapeExecuteResult = ScrapeResult | { jobId: string };
  */
 export class ScrapeTool {
   private pipeline: IPipeline;
+  private readonly scraperConfig: AppConfig["scraper"];
 
-  constructor(pipeline: IPipeline) {
+  constructor(pipeline: IPipeline, config: AppConfig["scraper"]) {
     this.pipeline = pipeline;
+    this.scraperConfig = config;
   }
 
   async execute(options: ScrapeToolOptions): Promise<ScrapeExecuteResult> {
@@ -138,14 +142,15 @@ export class ScrapeTool {
       version: internalVersion,
       scope: scraperOptions?.scope ?? "subpages",
       followRedirects: scraperOptions?.followRedirects ?? true,
-      maxPages: scraperOptions?.maxPages ?? DEFAULT_MAX_PAGES,
-      maxDepth: scraperOptions?.maxDepth ?? DEFAULT_MAX_DEPTH,
-      maxConcurrency: scraperOptions?.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY,
+      maxPages: scraperOptions?.maxPages ?? this.scraperConfig.maxPages,
+      maxDepth: scraperOptions?.maxDepth ?? this.scraperConfig.maxDepth,
+      maxConcurrency: scraperOptions?.maxConcurrency ?? this.scraperConfig.maxConcurrency,
       ignoreErrors: scraperOptions?.ignoreErrors ?? true,
       scrapeMode: scraperOptions?.scrapeMode ?? ScrapeMode.Auto, // Pass scrapeMode enum
       includePatterns: scraperOptions?.includePatterns,
       excludePatterns: scraperOptions?.excludePatterns,
       headers: scraperOptions?.headers, // <-- propagate headers
+      clean: scraperOptions?.clean, // <-- propagate clean option
     });
 
     // Conditionally wait for completion
