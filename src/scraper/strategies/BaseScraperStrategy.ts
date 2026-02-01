@@ -350,6 +350,14 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
       const batchSize = Math.min(maxConcurrency, remainingPages, queue.length);
       const batch = queue.splice(0, batchSize);
 
+      // Apply inter-request delay with jitter to avoid rate limiting
+      if (this.pageCount > 0 && options.delayBetweenPagesMs) {
+        await this.applyDelayWithJitter(
+          options.delayBetweenPagesMs,
+          this.config.scraper.delayJitterPercent,
+        );
+      }
+
       // Always use latest canonical base (may have been updated after first fetch)
       baseUrl = this.canonicalBaseUrl ?? baseUrl;
       const newUrls = await this.processBatch(
@@ -362,6 +370,31 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
 
       queue.push(...newUrls);
     }
+  }
+
+  /**
+   * Applies delay with jitter between page fetches to avoid rate limiting.
+   * Uses the configured delayBetweenPagesMs with ±delayJitterPercent randomization.
+   */
+  private async applyDelayWithJitter(
+    delayMs: number,
+    jitterPercent: number,
+  ): Promise<void> {
+    if (delayMs <= 0) return;
+
+    // Calculate jitter range (e.g., ±20%)
+    const jitterMultiplier = jitterPercent / 100;
+    const minDelay = delayMs * (1 - jitterMultiplier);
+    const maxDelay = delayMs * (1 + jitterMultiplier);
+
+    // Random delay within range
+    const actualDelay = minDelay + Math.random() * (maxDelay - minDelay);
+
+    logger.debug(
+      `⏱️  Applying rate limit delay: ${Math.round(actualDelay)}ms (base: ${delayMs}ms, jitter: ±${jitterPercent}%)`,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, actualDelay));
   }
 
   /**

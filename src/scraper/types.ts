@@ -70,6 +70,17 @@ export interface ScraperOptions {
    */
   followRedirects?: boolean;
   maxConcurrency?: number;
+  /**
+   * Minimum delay in milliseconds between fetching pages to avoid rate limiting.
+   * Actual delay will be randomized with ±20% jitter to avoid detection.
+   * @default 0 (no delay)
+   */
+  delayBetweenPagesMs?: number;
+  /**
+   * Maximum number of retry attempts for failed fetches.
+   * @default 12
+   */
+  maxRetries?: number;
   ignoreErrors?: boolean;
   /** CSS selectors for elements to exclude during HTML processing */
   excludeSelectors?: string[];

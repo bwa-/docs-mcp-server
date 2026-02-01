@@ -166,7 +166,7 @@ describe("HtmlPlaywrightMiddleware", () => {
       pageTimeoutMs: 5000,
       browserTimeoutMs: 30000,
       fetcher: {
-        maxRetries: 6,
+        maxRetries: 12,
         baseDelayMs: 1000,
         maxCacheItems: 200,
         maxCacheItemSizeBytes: 500 * 1024,

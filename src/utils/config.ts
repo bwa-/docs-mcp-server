@@ -56,8 +56,10 @@ export const DEFAULT_CONFIG = {
     maxConcurrency: 3,
     pageTimeoutMs: 5000,
     browserTimeoutMs: 30_000,
+    delayBetweenPagesMs: 0,
+    delayJitterPercent: 20,
     fetcher: {
-      maxRetries: 6,
+      maxRetries: 12,
       baseDelayMs: 1000,
       maxCacheItems: 200,
       maxCacheItemSizeBytes: 500 * 1024,
@@ -154,6 +156,16 @@ export const AppConfigSchema = z.object({
         .number()
         .int()
         .default(DEFAULT_CONFIG.scraper.browserTimeoutMs),
+      delayBetweenPagesMs: z.coerce
+        .number()
+        .int()
+        .default(DEFAULT_CONFIG.scraper.delayBetweenPagesMs),
+      delayJitterPercent: z.coerce
+        .number()
+        .int()
+        .min(0)
+        .max(100)
+        .default(DEFAULT_CONFIG.scraper.delayJitterPercent),
       fetcher: z
         .object({
           maxRetries: z.coerce

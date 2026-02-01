@@ -59,6 +59,18 @@ export interface ScrapeToolOptions {
      */
     headers?: Record<string, string>;
     /**
+     * Minimum delay in milliseconds between fetching pages to avoid rate limiting.
+     * Actual delay will be randomized with ±20% jitter (e.g., 10000ms becomes 8000-12000ms).
+     * Example: Set to 10000 for approximately 1 page every 10 seconds.
+     * @default 0 (no delay)
+     */
+    delayBetweenPagesMs?: number;
+    /**
+     * Maximum number of retry attempts for failed fetches.
+     * @default 12
+     */
+    maxRetries?: number;
+    /**
      * If true, clears existing documents for the library version before scraping.
      * If false, appends to the existing documents.
      * @default true
@@ -157,6 +169,8 @@ export class ScrapeTool {
       excludePatterns: scraperOptions?.excludePatterns,
       sitemapUrl: scraperOptions?.sitemapUrl, // <-- propagate sitemap URL
       headers: scraperOptions?.headers, // <-- propagate headers
+      delayBetweenPagesMs: scraperOptions?.delayBetweenPagesMs, // <-- propagate delay
+      maxRetries: scraperOptions?.maxRetries, // <-- propagate retry limit
       clean: scraperOptions?.clean, // <-- propagate clean option
     });
 

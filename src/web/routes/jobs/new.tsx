@@ -53,6 +53,8 @@ export function registerNewJobRoutes(
           scrapeMode?: ScrapeMode;
           followRedirects?: "on" | undefined; // Checkbox value is 'on' if checked
           ignoreErrors?: "on" | undefined;
+          delayBetweenPagesMs?: string;
+          maxRetries?: string;
           includePatterns?: string;
           excludePatterns?: string;
           "header[]"?: string[] | string; // Added header field for custom headers
@@ -133,6 +135,12 @@ export function registerNewJobRoutes(
             // Checkboxes send 'on' when checked, otherwise undefined
             followRedirects: body.followRedirects === "on",
             ignoreErrors: body.ignoreErrors === "on",
+            delayBetweenPagesMs: body.delayBetweenPagesMs
+              ? Number.parseInt(body.delayBetweenPagesMs, 10)
+              : undefined,
+            maxRetries: body.maxRetries
+              ? Number.parseInt(body.maxRetries, 10)
+              : undefined,
             includePatterns: parsePatterns(body.includePatterns),
             excludePatterns: parsePatterns(body.excludePatterns),
             headers: parseHeaders(body["header[]"]), // <-- propagate custom headers from web UI

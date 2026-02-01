@@ -20,6 +20,8 @@ export interface ScrapeFormInitialValues {
   headers?: Array<{ name: string; value: string }>;
   followRedirects?: boolean;
   ignoreErrors?: boolean;
+  delayBetweenPagesMs?: number;
+  maxRetries?: number;
 }
 
 interface ScrapeFormContentProps {
@@ -56,6 +58,8 @@ const ScrapeFormContent = ({
   const scrapeModeValue = initialValues?.scrapeMode || ScrapeMode.Auto;
   const followRedirectsValue = initialValues?.followRedirects ?? true;
   const ignoreErrorsValue = initialValues?.ignoreErrors ?? true;
+  const delayBetweenPagesValue = initialValues?.delayBetweenPagesMs?.toString() || "";
+  const maxRetriesValue = initialValues?.maxRetries?.toString() || "";
 
   // Format exclude patterns - use initial values if provided, otherwise use defaults
   const excludePatternsText =
@@ -576,6 +580,82 @@ const ScrapeFormContent = ({
               >
                 Ignore Errors During Scraping
               </label>
+            </div>
+          </div>
+
+          {/* Rate Limiting Section */}
+          <div class="border-t border-gray-200 dark:border-gray-700 pt-3 mt-3">
+            <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+              Rate Limiting
+            </h4>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label
+                  for="delayBetweenPagesMs"
+                  class="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Delay Between Pages (ms)
+                  <Tooltip
+                    text={
+                      <div>
+                        <p>
+                          Minimum delay in milliseconds between fetching pages.
+                          Helps avoid rate limiting (429 errors).
+                        </p>
+                        <p class="mt-2">
+                          <b>Example:</b> Set to 10000 for ~1 page every 10
+                          seconds.
+                        </p>
+                        <p class="mt-2">
+                          Actual delay is randomized ±20% to avoid detection
+                          patterns (e.g., 10000ms becomes 8000-12000ms).
+                        </p>
+                      </div>
+                    }
+                  />
+                </label>
+                <input
+                  type="number"
+                  id="delayBetweenPagesMs"
+                  name="delayBetweenPagesMs"
+                  min="0"
+                  step="1000"
+                  value={delayBetweenPagesValue}
+                  placeholder={`Default: ${scraperConfig?.delayBetweenPagesMs ?? 0}`}
+                  class="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-primary-500 focus:border-primary-500"
+                />
+              </div>
+              <div>
+                <label
+                  for="maxRetries"
+                  class="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Max Retries
+                  <Tooltip
+                    text={
+                      <div>
+                        <p>
+                          Maximum number of retry attempts for failed fetches.
+                        </p>
+                        <p class="mt-2">
+                          Applies exponential backoff with increasing delays
+                          between retries.
+                        </p>
+                      </div>
+                    }
+                  />
+                </label>
+                <input
+                  type="number"
+                  id="maxRetries"
+                  name="maxRetries"
+                  min="0"
+                  max="50"
+                  value={maxRetriesValue}
+                  placeholder={`Default: ${scraperConfig?.fetcher.maxRetries ?? 12}`}
+                  class="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-primary-500 focus:border-primary-500"
+                />
+              </div>
             </div>
           </div>
         </div>

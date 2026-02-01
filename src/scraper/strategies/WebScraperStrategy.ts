@@ -79,11 +79,12 @@ export class WebScraperStrategy extends BaseScraperStrategy {
         }
       }
 
-      // Define fetch options, passing signal, followRedirects, headers, and etag
+      // Define fetch options, passing signal, followRedirects, headers, maxRetries, and etag
       const fetchOptions = {
         signal,
         followRedirects: options.followRedirects,
         headers: options.headers, // Forward custom headers
+        maxRetries: options.maxRetries, // Forward retry limit
         etag: item.etag, // Pass ETag for conditional requests
       };
 
