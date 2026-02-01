@@ -48,6 +48,12 @@ export interface ScrapeToolOptions {
      */
     excludePatterns?: string[];
     /**
+     * URL to a sitemap.xml file to use for discovering pages.
+     * When provided, pages are scraped from the sitemap instead of crawling links.
+     * Supports both regular sitemaps and sitemap index files.
+     */
+    sitemapUrl?: string;
+    /**
      * Custom HTTP headers to send with each request (e.g., for authentication).
      * Keys are header names, values are header values.
      */
@@ -149,6 +155,7 @@ export class ScrapeTool {
       scrapeMode: scraperOptions?.scrapeMode ?? ScrapeMode.Auto, // Pass scrapeMode enum
       includePatterns: scraperOptions?.includePatterns,
       excludePatterns: scraperOptions?.excludePatterns,
+      sitemapUrl: scraperOptions?.sitemapUrl, // <-- propagate sitemap URL
       headers: scraperOptions?.headers, // <-- propagate headers
       clean: scraperOptions?.clean, // <-- propagate clean option
     });

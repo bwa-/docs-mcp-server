@@ -97,6 +97,12 @@ export interface ScraperOptions {
    */
   headers?: Record<string, string>;
   /**
+   * URL to a sitemap.xml file to use for discovering pages.
+   * When provided, pages are scraped from the sitemap instead of crawling links.
+   * Supports both regular sitemaps and sitemap index files.
+   */
+  sitemapUrl?: string;
+  /**
    * Pre-populated queue of pages to visit.
    * When provided:
    * - Disables link discovery and crawling

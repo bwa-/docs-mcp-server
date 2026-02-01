@@ -110,6 +110,11 @@ export interface VersionScraperOptions {
   excludeSelectors?: string[];
   includePatterns?: string[];
   excludePatterns?: string[];
+  /**
+   * URL to a sitemap.xml file to use for discovering pages.
+   * When provided, pages are scraped from the sitemap instead of crawling links.
+   */
+  sitemapUrl?: string;
 
   // Processing options
   scrapeMode?: ScrapeMode;

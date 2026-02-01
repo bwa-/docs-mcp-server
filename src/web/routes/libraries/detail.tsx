@@ -12,7 +12,9 @@ import VersionDetailsRow from "../../components/VersionDetailsRow";
 import LibrarySearchCard from "../../components/LibrarySearchCard";
 import SearchResultList from "../../components/SearchResultList";
 import SearchResultSkeletonItem from "../../components/SearchResultSkeletonItem";
-import ScrapeFormContent from "../../components/ScrapeFormContent";
+import ScrapeFormContent, {
+  type ScrapeFormInitialValues,
+} from "../../components/ScrapeFormContent";
 
 /**
  * Registers the route for displaying library details.
@@ -225,19 +227,7 @@ export function registerLibraryDetailRoutes(
         const versions = libraryInfo.versions || [];
         const latestVersion = versions[0];
 
-        let initialValues: {
-          library: string;
-          url?: string;
-          maxPages?: number;
-          maxDepth?: number;
-          scope?: string;
-          includePatterns?: string;
-          excludePatterns?: string;
-          scrapeMode?: string;
-          headers?: Array<{ name: string; value: string }>;
-          followRedirects?: boolean;
-          ignoreErrors?: boolean;
-        } = {
+        let initialValues: ScrapeFormInitialValues = {
           library: libraryName,
         };
 
@@ -267,6 +257,7 @@ export function registerLibraryDetailRoutes(
                   scope: opts.scope,
                   includePatterns: opts.includePatterns?.join("\n"),
                   excludePatterns: opts.excludePatterns?.join("\n"),
+                  sitemapUrl: opts.sitemapUrl,
                   scrapeMode: opts.scrapeMode,
                   headers: opts.headers
                     ? Object.entries(opts.headers).map(([name, value]) => ({

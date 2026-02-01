@@ -49,6 +49,7 @@ export function registerNewJobRoutes(
           maxPages?: string;
           maxDepth?: string;
           scope?: "subpages" | "hostname" | "domain";
+          sitemapUrl?: string;
           scrapeMode?: ScrapeMode;
           followRedirects?: "on" | undefined; // Checkbox value is 'on' if checked
           ignoreErrors?: "on" | undefined;
@@ -125,6 +126,9 @@ export function registerNewJobRoutes(
               ? Number.parseInt(body.maxDepth, 10)
               : undefined,
             scope: body.scope,
+            sitemapUrl: body.sitemapUrl && body.sitemapUrl.trim() !== "" 
+              ? body.sitemapUrl.trim() 
+              : undefined,
             scrapeMode: body.scrapeMode,
             // Checkboxes send 'on' when checked, otherwise undefined
             followRedirects: body.followRedirects === "on",

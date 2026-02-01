@@ -15,6 +15,7 @@ export interface ScrapeFormInitialValues {
   scope?: string;
   includePatterns?: string;
   excludePatterns?: string;
+  sitemapUrl?: string;
   scrapeMode?: string;
   headers?: Array<{ name: string; value: string }>;
   followRedirects?: boolean;
@@ -51,6 +52,7 @@ const ScrapeFormContent = ({
   const maxDepthValue = initialValues?.maxDepth?.toString() || "";
   const scopeValue = initialValues?.scope || "subpages";
   const includePatternsValue = initialValues?.includePatterns || "";
+  const sitemapUrlValue = initialValues?.sitemapUrl || "";
   const scrapeModeValue = initialValues?.scrapeMode || ScrapeMode.Auto;
   const followRedirectsValue = initialValues?.followRedirects ?? true;
   const ignoreErrorsValue = initialValues?.ignoreErrors ?? true;
@@ -247,6 +249,7 @@ const ScrapeFormContent = ({
               scopeValue !== "subpages" ||
               includePatternsValue ||
               excludePatternsText ||
+              sitemapUrlValue ||
               scrapeModeValue !== ScrapeMode.Auto)
               ? "true"
               : "false"
@@ -410,6 +413,39 @@ const ScrapeFormContent = ({
                   ? "Patterns from previous version. Edit as needed."
                   : "Default patterns are pre-filled. Edit to customize or clear to exclude nothing."}
               </p>
+            </div>
+            <div>
+              <div class="flex items-center">
+                <label
+                  for="sitemapUrl"
+                  class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                  Sitemap URL
+                </label>
+                <Tooltip
+                  text={
+                    <div>
+                      <p>
+                        Optional URL to a sitemap.xml file for sites that are
+                        difficult to crawl normally.
+                      </p>
+                      <p class="mt-2">
+                        When provided, pages will be scraped from the sitemap
+                        instead of following links. Supports both regular
+                        sitemaps and sitemap index files.
+                      </p>
+                    </div>
+                  }
+                />
+              </div>
+              <input
+                type="url"
+                name="sitemapUrl"
+                id="sitemapUrl"
+                value={sitemapUrlValue}
+                placeholder="https://docs.example.com/sitemap.xml"
+                class="mt-0.5 block w-full max-w-sm px-2 py-1 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+              />
             </div>
             <div>
               <div class="flex items-center">

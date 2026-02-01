@@ -6,6 +6,7 @@
 import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { ProgressCallback } from "../../types";
 import type { AppConfig } from "../../utils/config";
 import { logger } from "../../utils/logger";
 import type { UrlNormalizerOptions } from "../../utils/url";
@@ -13,7 +14,8 @@ import { AutoDetectFetcher } from "../fetcher";
 import { FetchStatus, type RawContent } from "../fetcher/types";
 import { PipelineFactory } from "../pipelines/PipelineFactory";
 import type { ContentPipeline, PipelineResult } from "../pipelines/types";
-import type { QueueItem, ScraperOptions } from "../types";
+import type { QueueItem, ScraperOptions, ScraperProgressEvent } from "../types";
+import { parseSitemap } from "../utils/sitemap";
 import { BaseScraperStrategy, type ProcessItemResult } from "./BaseScraperStrategy";
 import { LocalFileStrategy } from "./LocalFileStrategy";
 
@@ -248,6 +250,72 @@ export class WebScraperStrategy extends BaseScraperStrategy {
       url: item.url, // Keep original URL as the source of this item
       // links are file://...
     };
+  }
+
+  /**
+   * Override scrape method to support sitemap-based scraping.
+   * If sitemapUrl is provided, populates initialQueue from sitemap URLs.
+   */
+  override async scrape(
+    options: ScraperOptions,
+    progressCallback: ProgressCallback<ScraperProgressEvent>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    // If a sitemap URL is provided, fetch and parse it to populate the initial queue
+    if (options.sitemapUrl && !options.initialQueue) {
+      try {
+        logger.info(`🗺️  Fetching sitemap from ${options.sitemapUrl}`);
+
+        // Create a simple fetcher function for the sitemap parser
+        const fetchSitemapContent = async (
+          url: string,
+          fetchOptions?: { headers?: Record<string, string> },
+        ): Promise<string> => {
+          const rawContent = await this.fetcher.fetch(url, {
+            signal,
+            headers: fetchOptions?.headers,
+          });
+
+          if (rawContent.status !== FetchStatus.SUCCESS) {
+            throw new Error(`Failed to fetch sitemap: HTTP status ${rawContent.status}`);
+          }
+
+          // Convert Buffer to string if needed
+          const content =
+            typeof rawContent.content === "string"
+              ? rawContent.content
+              : rawContent.content.toString("utf-8");
+
+          return content;
+        };
+
+        // Parse sitemap and get URLs
+        const sitemapUrls = await parseSitemap(
+          options.sitemapUrl,
+          fetchSitemapContent,
+          options.headers,
+        );
+
+        // Filter sitemap URLs based on scope and patterns (same rules as normal crawling)
+        const filteredUrls = sitemapUrls.filter((item) =>
+          this.shouldProcessUrl(item.url, options),
+        );
+
+        // Populate initialQueue with filtered sitemap URLs
+        options.initialQueue = filteredUrls;
+
+        logger.info(
+          `✅ Populated queue with ${filteredUrls.length} URLs from sitemap (${sitemapUrls.length} total, ${sitemapUrls.length - filteredUrls.length} filtered out)`,
+        );
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        logger.error(`❌ Failed to process sitemap: ${errorMsg}`);
+        throw new Error(`Sitemap processing failed: ${errorMsg}`);
+      }
+    }
+
+    // Proceed with normal scraping logic using the populated initialQueue
+    await super.scrape(options, progressCallback, signal);
   }
 
   /**
