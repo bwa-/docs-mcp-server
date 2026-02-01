@@ -81,6 +81,37 @@ const LibraryDetailCard = ({ library }: LibraryDetailCardProps) => {
       <div id="add-version-form-container" class="mt-4">
         <AddVersionButton libraryName={library.name} />
       </div>
+
+      {/* Library Settings */}
+      {(library.description || library.delayBetweenPagesMs || library.maxRetries) && (
+        <div class="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+          <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-2">
+            Library Settings
+          </h4>
+          <dl class="space-y-1 text-sm">
+            {library.description && (
+              <div>
+                <dt class="inline font-medium text-gray-700 dark:text-gray-300">Description: </dt>
+                <dd class="inline text-gray-600 dark:text-gray-400">{library.description}</dd>
+              </div>
+            )}
+            {library.delayBetweenPagesMs !== undefined && library.delayBetweenPagesMs > 0 && (
+              <div>
+                <dt class="inline font-medium text-gray-700 dark:text-gray-300">Default Delay: </dt>
+                <dd class="inline text-gray-600 dark:text-gray-400">
+                  {library.delayBetweenPagesMs}ms (~{Math.round(library.delayBetweenPagesMs / 1000)}s between pages)
+                </dd>
+              </div>
+            )}
+            {library.maxRetries !== undefined && library.maxRetries !== null && (
+              <div>
+                <dt class="inline font-medium text-gray-700 dark:text-gray-300">Default Max Retries: </dt>
+                <dd class="inline text-gray-600 dark:text-gray-400">{library.maxRetries}</dd>
+              </div>
+            )}
+          </dl>
+        </div>
+      )}
     </div>
   );
 };

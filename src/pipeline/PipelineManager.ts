@@ -800,4 +800,19 @@ export class PipelineManager implements IPipeline {
   } | null {
     return this.store.getLibrarySettings(library);
   }
+
+  /**
+   * Updates rate limiting settings for a specific library.
+   * Creates the library if it doesn't exist.
+   */
+  updateLibrarySettings(
+    library: string,
+    settings: {
+      delayBetweenPagesMs?: number;
+      maxRetries?: number | null;
+      description?: string | null;
+    },
+  ): void {
+    this.store.updateLibrarySettings(library, settings);
+  }
 }

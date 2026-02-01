@@ -583,10 +583,98 @@ const ScrapeFormContent = ({
             </div>
           </div>
 
-          {/* Rate Limiting Section */}
+          {/* Library Settings Section - Only show for new libraries */}
+          {!isAddVersionMode && (
+            <div class="border-t border-gray-200 dark:border-gray-700 pt-3 mt-3">
+              <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                Library Settings (Apply to All Versions)
+              </h4>
+              <div class="space-y-2">
+                <div>
+                  <label
+                    for="libraryDescription"
+                    class="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                  >
+                    Description
+                    <Tooltip
+                      text="Optional description or notes about this library"
+                    />
+                  </label>
+                  <input
+                    type="text"
+                    id="libraryDescription"
+                    name="libraryDescription"
+                    placeholder="e.g., Official React documentation"
+                    class="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-primary-500 focus:border-primary-500"
+                  />
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label
+                      for="libraryDelayBetweenPagesMs"
+                      class="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    >
+                      Default Page Delay (ms)
+                      <Tooltip
+                        text={
+                          <div>
+                            <p>
+                              Default delay between pages for this library.
+                              Applied to all scrape jobs unless overridden.
+                            </p>
+                            <p class="mt-2">
+                              Set this based on the site's rate limiting policy.
+                            </p>
+                          </div>
+                        }
+                      />
+                    </label>
+                    <input
+                      type="number"
+                      id="libraryDelayBetweenPagesMs"
+                      name="libraryDelayBetweenPagesMs"
+                      min="0"
+                      step="1000"
+                      placeholder="e.g., 10000 for strict sites"
+                      class="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-primary-500 focus:border-primary-500"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      for="libraryMaxRetries"
+                      class="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    >
+                      Default Max Retries
+                      <Tooltip
+                        text={
+                          <div>
+                            <p>
+                              Default retry limit for this library.
+                              Applied to all scrape jobs unless overridden.
+                            </p>
+                          </div>
+                        }
+                      />
+                    </label>
+                    <input
+                      type="number"
+                      id="libraryMaxRetries"
+                      name="libraryMaxRetries"
+                      min="0"
+                      max="50"
+                      placeholder="e.g., 12 or 20"
+                      class="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-primary-500 focus:border-primary-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Rate Limiting Section - Per-Job Settings */}
           <div class="border-t border-gray-200 dark:border-gray-700 pt-3 mt-3">
             <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
-              Rate Limiting
+              Rate Limiting (This Job Only)
             </h4>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div>

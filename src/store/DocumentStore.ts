@@ -744,6 +744,51 @@ export class DocumentStore {
   }
 
   /**
+   * Updates rate limiting settings for a specific library.
+   * Creates the library if it doesn't exist.
+   */
+  updateLibrarySettings(
+    library: string,
+    settings: {
+      delayBetweenPagesMs?: number;
+      maxRetries?: number | null;
+      description?: string | null;
+    },
+  ): void {
+    const normalizedLibrary = library.toLowerCase();
+
+    // Ensure library exists
+    this.statements.insertLibrary.run(normalizedLibrary);
+
+    // Update settings (only update provided fields)
+    const updates: string[] = [];
+    const values: (number | string | null)[] = [];
+
+    if (settings.delayBetweenPagesMs !== undefined) {
+      updates.push("delay_between_pages_ms = ?");
+      values.push(settings.delayBetweenPagesMs);
+    }
+    if (settings.maxRetries !== undefined) {
+      updates.push("max_retries = ?");
+      values.push(settings.maxRetries);
+    }
+    if (settings.description !== undefined) {
+      updates.push("description = ?");
+      values.push(settings.description);
+    }
+
+    if (updates.length > 0) {
+      values.push(normalizedLibrary);
+      const stmt = this.db.prepare(`
+        UPDATE libraries
+        SET ${updates.join(", ")}
+        WHERE name = ?
+      `);
+      stmt.run(...values);
+    }
+  }
+
+  /**
    * Resolves a library name and version string to version_id.
    * Creates library and version records if they don't exist.
    */

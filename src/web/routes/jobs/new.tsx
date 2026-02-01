@@ -55,6 +55,9 @@ export function registerNewJobRoutes(
           ignoreErrors?: "on" | undefined;
           delayBetweenPagesMs?: string;
           maxRetries?: string;
+          libraryDescription?: string;
+          libraryDelayBetweenPagesMs?: string;
+          libraryMaxRetries?: string;
           includePatterns?: string;
           excludePatterns?: string;
           "header[]"?: string[] | string; // Added header field for custom headers
@@ -113,6 +116,32 @@ export function registerNewJobRoutes(
           body.version.trim().toLowerCase() === "latest"
             ? null
             : body.version.trim();
+
+        // Save library-level settings if this is a new library (formMode === 'new')
+        if (body.formMode === "new") {
+          const librarySettings: {
+            description?: string | null;
+            delayBetweenPagesMs?: number;
+            maxRetries?: number | null;
+          } = {};
+          
+          if (body.libraryDescription && body.libraryDescription.trim() !== "") {
+            librarySettings.description = body.libraryDescription.trim();
+          }
+          if (body.libraryDelayBetweenPagesMs) {
+            librarySettings.delayBetweenPagesMs = Number.parseInt(body.libraryDelayBetweenPagesMs, 10);
+          }
+          if (body.libraryMaxRetries) {
+            librarySettings.maxRetries = Number.parseInt(body.libraryMaxRetries, 10);
+          }
+          
+          // Update library settings if any were provided
+          if (Object.keys(librarySettings).length > 0) {
+            // Access pipeline through scrapeTool (needs to be passed or accessed via context)
+            // For now, we'll add this to ScrapeTool
+            (scrapeTool as any).pipeline?.updateLibrarySettings?.(body.library, librarySettings);
+          }
+        }
 
         // Prepare options for ScrapeTool
         const scrapeOptions = {

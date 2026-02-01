@@ -39,4 +39,13 @@ export interface IPipeline {
     maxRetries: number | null;
     description: string | null;
   } | null;
+  /** Updates rate limiting settings for a library */
+  updateLibrarySettings?(
+    library: string,
+    settings: {
+      delayBetweenPagesMs?: number;
+      maxRetries?: number | null;
+      description?: string | null;
+    },
+  ): void;
 }
