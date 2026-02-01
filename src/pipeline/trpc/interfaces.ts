@@ -33,4 +33,10 @@ export interface IPipeline {
   clearCompletedJobs(): Promise<number>;
   waitForJobCompletion(jobId: string): Promise<void>;
   setCallbacks(callbacks: PipelineManagerCallbacks): void;
+  /** Gets rate limiting settings for a library (null if doesn't exist) */
+  getLibrarySettings?(library: string): {
+    delayBetweenPagesMs: number;
+    maxRetries: number | null;
+    description: string | null;
+  } | null;
 }

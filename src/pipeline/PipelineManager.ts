@@ -788,4 +788,16 @@ export class PipelineManager implements IPipeline {
       `Job ${job.id} progress: ${progress.pagesScraped}/${progress.totalPages} pages`,
     );
   }
+
+  /**
+   * Gets rate limiting settings for a specific library.
+   * Returns null if library doesn't exist.
+   */
+  getLibrarySettings(library: string): {
+    delayBetweenPagesMs: number;
+    maxRetries: number | null;
+    description: string | null;
+  } | null {
+    return this.store.getLibrarySettings(library);
+  }
 }

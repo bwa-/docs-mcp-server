@@ -177,6 +177,12 @@ export interface VersionSummary {
 export interface LibrarySummary {
   library: string;
   versions: VersionSummary[];
+  /** Optional description/notes about this library */
+  description?: string | null;
+  /** Default delay between pages in milliseconds for rate limiting (0 = no delay) */
+  delayBetweenPagesMs?: number;
+  /** Default max retries for this library (null = use global default) */
+  maxRetries?: number | null;
 }
 
 /**

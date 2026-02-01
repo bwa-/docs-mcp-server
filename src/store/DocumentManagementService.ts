@@ -99,6 +99,18 @@ export class DocumentManagementService {
     await this.store.shutdown();
   }
 
+  /**
+   * Gets rate limiting settings for a specific library.
+   * Returns null if library doesn't exist.
+   */
+  getLibrarySettings(library: string): {
+    delayBetweenPagesMs: number;
+    maxRetries: number | null;
+    description: string | null;
+  } | null {
+    return this.store.getLibrarySettings(library);
+  }
+
   // Status tracking methods for pipeline integration
 
   /**
@@ -167,6 +179,8 @@ export class DocumentManagementService {
     const libMap = await this.store.queryLibraryVersions();
     const summaries: LibrarySummary[] = [];
     for (const [library, versions] of libMap) {
+      // Get library settings from first version (all versions share same library settings)
+      const firstVersion = versions[0];
       const vs = versions.map(
         (v) =>
           ({
@@ -183,7 +197,13 @@ export class DocumentManagementService {
             sourceUrl: v.sourceUrl ?? undefined,
           }) satisfies VersionSummary,
       );
-      summaries.push({ library, versions: vs });
+      summaries.push({
+        library,
+        versions: vs,
+        description: firstVersion?.libraryDescription ?? undefined,
+        delayBetweenPagesMs: firstVersion?.libraryDelayMs ?? 0,
+        maxRetries: firstVersion?.libraryMaxRetries ?? undefined,
+      });
     }
     return summaries;
   }

@@ -101,6 +101,30 @@ export class ScrapeTool {
     this.scraperConfig = config;
   }
 
+  /**
+   * Gets library-specific rate limiting settings.
+   * Falls back to global defaults if library doesn't exist or has no custom settings.
+   */
+  private getLibraryRateLimitDefaults(library: string): {
+    delayBetweenPagesMs: number;
+    maxRetries: number;
+  } {
+    try {
+      const settings = this.pipeline.getLibrarySettings?.(library);
+      return {
+        delayBetweenPagesMs:
+          settings?.delayBetweenPagesMs ?? this.scraperConfig.delayBetweenPagesMs,
+        maxRetries: settings?.maxRetries ?? this.scraperConfig.fetcher.maxRetries,
+      };
+    } catch {
+      // Library doesn't exist yet, use global defaults
+      return {
+        delayBetweenPagesMs: this.scraperConfig.delayBetweenPagesMs,
+        maxRetries: this.scraperConfig.fetcher.maxRetries,
+      };
+    }
+  }
+
   async execute(options: ScrapeToolOptions): Promise<ScrapeExecuteResult> {
     const {
       library,
@@ -144,6 +168,9 @@ export class ScrapeTool {
     // Use the injected pipeline instance
     const pipeline = this.pipeline;
 
+    // Get library-specific rate limiting defaults
+    const libraryDefaults = this.getLibraryRateLimitDefaults(library);
+
     // Remove internal progress tracking and callbacks
     // let pagesScraped = 0;
     // let lastReportedPages = 0;
@@ -169,8 +196,10 @@ export class ScrapeTool {
       excludePatterns: scraperOptions?.excludePatterns,
       sitemapUrl: scraperOptions?.sitemapUrl, // <-- propagate sitemap URL
       headers: scraperOptions?.headers, // <-- propagate headers
-      delayBetweenPagesMs: scraperOptions?.delayBetweenPagesMs, // <-- propagate delay
-      maxRetries: scraperOptions?.maxRetries, // <-- propagate retry limit
+      // Apply library defaults if not explicitly provided
+      delayBetweenPagesMs:
+        scraperOptions?.delayBetweenPagesMs ?? libraryDefaults.delayBetweenPagesMs,
+      maxRetries: scraperOptions?.maxRetries ?? libraryDefaults.maxRetries,
       clean: scraperOptions?.clean, // <-- propagate clean option
     });
 

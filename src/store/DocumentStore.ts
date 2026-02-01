@@ -323,6 +323,9 @@ export class DocumentStore {
       queryLibraryVersions: this.db.prepare<[]>(
         `SELECT
           l.name as library,
+          l.description as libraryDescription,
+          l.delay_between_pages_ms as libraryDelayMs,
+          l.max_retries as libraryMaxRetries,
           COALESCE(v.name, '') as version,
           v.id as versionId,
           v.status as status,
@@ -708,6 +711,39 @@ export class DocumentStore {
   }
 
   /**
+   * Gets rate limiting settings for a specific library.
+   * Returns null if library doesn't exist.
+   */
+  getLibrarySettings(library: string): {
+    delayBetweenPagesMs: number;
+    maxRetries: number | null;
+    description: string | null;
+  } | null {
+    const normalizedLibrary = library.toLowerCase();
+    const stmt = this.db.prepare<[string]>(`
+      SELECT delay_between_pages_ms, max_retries, description
+      FROM libraries
+      WHERE name = ?
+    `);
+
+    const result = stmt.get(normalizedLibrary) as
+      | {
+          delay_between_pages_ms: number | null;
+          max_retries: number | null;
+          description: string | null;
+        }
+      | undefined;
+
+    if (!result) return null;
+
+    return {
+      delayBetweenPagesMs: result.delay_between_pages_ms ?? 0,
+      maxRetries: result.max_retries,
+      description: result.description,
+    };
+  }
+
+  /**
    * Resolves a library name and version string to version_id.
    * Creates library and version records if they don't exist.
    */
@@ -975,11 +1011,18 @@ export class DocumentStore {
         documentCount: number;
         uniqueUrlCount: number;
         indexedAt: string | null;
+        libraryDescription: string | null;
+        libraryDelayMs: number;
+        libraryMaxRetries: number | null;
       }>
     >
   > {
     try {
-      const rows = this.statements.queryLibraryVersions.all() as DbLibraryVersion[];
+      const rows = this.statements.queryLibraryVersions.all() as (DbLibraryVersion & {
+        libraryDescription: string | null;
+        libraryDelayMs: number;
+        libraryMaxRetries: number | null;
+      })[];
       const libraryMap = new Map<
         string,
         Array<{
@@ -992,6 +1035,9 @@ export class DocumentStore {
           documentCount: number;
           uniqueUrlCount: number;
           indexedAt: string | null;
+          libraryDescription: string | null;
+          libraryDelayMs: number;
+          libraryMaxRetries: number | null;
         }>
       >();
 
@@ -1016,6 +1062,9 @@ export class DocumentStore {
           documentCount: row.documentCount,
           uniqueUrlCount: row.uniqueUrlCount,
           indexedAt: indexedAtISO,
+          libraryDescription: row.libraryDescription,
+          libraryDelayMs: row.libraryDelayMs ?? 0,
+          libraryMaxRetries: row.libraryMaxRetries,
         });
       }
 
