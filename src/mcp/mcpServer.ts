@@ -262,14 +262,18 @@ export function createMcpServerInstance(
         const qualityHint = allFts
           ? " Semantic embedding did not contribute — try more descriptive or conceptual query terms."
           : "";
-        const moreHint =
-          total > n ? ` Increase \`limit\` to see more (max 10 surfaced).` : "";
-        const countLine = `Showing ${n} of ${total} results (${searchMode}).${qualityHint}${moreHint}`;
+        // total is capped at 10 by the DB fetch limit; show "10+" when the cap was hit
+        // so the agent knows there may be even more results beyond what was surfaced.
+        const foundLabel = total >= 10 ? "10+" : String(total);
+        const countLine =
+          n < total
+            ? `Showing ${n} of ${foundLabel} results (${searchMode}). Increase \`limit\` to see more.${qualityHint}`
+            : `Found ${n} result${n !== 1 ? "s" : ""} (${searchMode}).${qualityHint}`;
         const legendLine =
           "Match quality: strong match (≥90% of top score) = directly relevant; good match (≥70%) = closely related; fair match (≥45%) = partial overlap; weak match (<45%) = marginally relevant.";
 
         const formattedResults = displayResults.map((r: StoreSearchResult, i: number) => {
-          const rankTag = `#${i + 1}/${total}`;
+          const rankTag = `#${i + 1}/${n}`;
           const matchTag = r.matchedBy ? ` [${r.matchedBy}]` : "";
           const snippetLine =
             r.ftsSnippets && r.ftsSnippets.length > 0
