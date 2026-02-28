@@ -65,6 +65,49 @@ export function registerLibrariesRoutes(
     }
   );
 
+  // POST route for refreshing all versions of all libraries
+  server.post(
+    "/web/libraries/refresh-all",
+    async (_request, reply) => {
+      try {
+        const result = await listLibrariesTool.execute();
+        let count = 0;
+        for (const lib of result.libraries) {
+          for (const v of lib.versions ?? []) {
+            const version = v.version || undefined;
+            await refreshVersionTool.execute({
+              library: lib.name,
+              version,
+              waitForCompletion: false,
+            });
+            count++;
+          }
+        }
+        reply.header(
+          "HX-Trigger",
+          JSON.stringify({
+            toast: {
+              message: `Refresh started for ${count} version${count !== 1 ? "s" : ""}`,
+              type: "success",
+            },
+          })
+        );
+        reply.status(204).send();
+      } catch (error: unknown) {
+        logger.error(`Failed to refresh all versions: ${error}`);
+        const errorMessage =
+          error instanceof Error ? error.message : "Failed to refresh all versions.";
+        reply.header(
+          "HX-Trigger",
+          JSON.stringify({
+            toast: { message: errorMessage, type: "error" },
+          })
+        );
+        reply.status(500).send();
+      }
+    }
+  );
+
   // POST route for refreshing a version
   server.post<{ Params: { libraryName: string; versionParam: string } }>(
     "/web/libraries/:libraryName/versions/:versionParam/refresh",

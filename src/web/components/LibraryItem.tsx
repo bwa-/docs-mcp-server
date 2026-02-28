@@ -63,7 +63,7 @@ const LibraryItem = ({ library }: LibraryItemProps) => {
               sourceUrl: v.sourceUrl ?? undefined,
             };
             return (
-              <VersionDetailsRow libraryName={library.name} version={adapted} />
+              <VersionDetailsRow libraryName={library.name} version={adapted} showRefresh={true} />
             );
           })
         ) : (

@@ -86,9 +86,21 @@ export function registerIndexRoute(
           </section>
           {/* Indexed Documentation Section */}
           <div>
-            <h2 class="text-xl font-semibold mb-2 text-gray-900 dark:text-white">
-              Indexed Documentation
-            </h2>
+            <div class="flex items-center justify-between mb-2">
+              <h2 class="text-xl font-semibold text-gray-900 dark:text-white">
+                Indexed Documentation
+              </h2>
+              <button
+                type="button"
+                class="text-xs px-3 py-1.5 text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 hover:text-gray-800 focus:ring-4 focus:outline-none focus:ring-gray-200 transition-colors duration-150 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-600 dark:hover:bg-gray-600 dark:hover:text-white dark:focus:ring-gray-700"
+                title="Queue a refresh for all indexed versions"
+                hx-post="/web/libraries/refresh-all"
+                hx-trigger="click"
+                hx-swap="none"
+              >
+                Refresh All Versions
+              </button>
+            </div>
             <div
               id="indexed-docs"
               hx-get="/web/libraries"
