@@ -110,7 +110,12 @@ export class BrowserFetcher implements ContentFetcher {
     return chromium.launch({
       headless: true,
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-      args: ["--no-sandbox"],
+      args: [
+        "--no-sandbox",
+        // Disable Autofill crowdsourcing: prevents Chromium from querying/uploading
+        // form field type predictions to content-autofill.googleapis.com on every page visit.
+        "--disable-features=AutofillServerCommunication",
+      ],
     });
   }
 

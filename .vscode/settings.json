@@ -1,5 +1,8 @@
 {
     "chat.tools.terminal.autoApprove": {
-        "grep": true
+        "grep": true,
+        "npm install": true,
+        "tail": true,
+        "docker build": true
     }
 }
