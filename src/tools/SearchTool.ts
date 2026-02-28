@@ -40,7 +40,7 @@ export class SearchTool {
   }
 
   async execute(options: SearchToolOptions): Promise<SearchToolResult> {
-    const { library, version, query, limit = 5, exactMatch = false } = options;
+    const { library, version, query, limit = 1, exactMatch = false } = options;
 
     // Validate required inputs
     if (!library || typeof library !== "string" || library.trim() === "") {
@@ -57,9 +57,9 @@ export class SearchTool {
       );
     }
 
-    if (limit !== undefined && (typeof limit !== "number" || limit < 1 || limit > 100)) {
+    if (limit !== undefined && (typeof limit !== "number" || limit < 1 || limit > 10)) {
       throw new ValidationError(
-        "Limit must be a number between 1 and 100.",
+        "Limit must be a number between 1 and 10.",
         this.constructor.name,
       );
     }

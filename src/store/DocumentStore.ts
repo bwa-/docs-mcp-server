@@ -37,6 +37,7 @@ interface RawSearchResult extends DbChunk {
   // Search scoring fields
   vec_score?: number;
   fts_score?: number;
+  fts_snippet?: string | null;
 }
 
 interface RankedResult extends RawSearchResult {
@@ -1615,7 +1616,8 @@ export class DocumentStore {
           fts_scores AS (
             SELECT
               f.rowid as id,
-              bm25(documents_fts, 10.0, 1.0, 5.0, 1.0) as fts_score
+              bm25(documents_fts, 10.0, 1.0, 5.0, 1.0) as fts_score,
+              snippet(documents_fts, 0, '**', '**', '...', 8) as fts_snippet
             FROM documents_fts f
             JOIN documents d ON f.rowid = d.id
             JOIN pages p ON d.page_id = p.id
@@ -1635,7 +1637,8 @@ export class DocumentStore {
             p.title as title,
             p.content_type as content_type,
             COALESCE(1 / (1 + v.vec_distance), 0) as vec_score,
-            COALESCE(-MIN(f.fts_score, 0), 0) as fts_score
+            COALESCE(-MIN(f.fts_score, 0), 0) as fts_score,
+            f.fts_snippet as fts_snippet
           FROM documents d
           JOIN pages p ON d.page_id = p.id
           LEFT JOIN vec_distances v ON d.id = v.id
@@ -1678,6 +1681,7 @@ export class DocumentStore {
             score: row.rrf_score,
             vec_rank: row.vec_rank,
             fts_rank: row.fts_rank,
+            fts_snippet: row.fts_snippet ?? null,
           });
         });
       } else {
@@ -1690,7 +1694,8 @@ export class DocumentStore {
             p.url as url,
             p.title as title,
             p.content_type as content_type,
-            bm25(documents_fts, 10.0, 1.0, 5.0, 1.0) as fts_score
+            bm25(documents_fts, 10.0, 1.0, 5.0, 1.0) as fts_score,
+            snippet(documents_fts, 0, '**', '**', '...', 8) as fts_snippet
           FROM documents_fts f
           JOIN documents d ON f.rowid = d.id
           JOIN pages p ON d.page_id = p.id
@@ -1726,6 +1731,7 @@ export class DocumentStore {
           return Object.assign(result, {
             score: -row.fts_score, // Convert BM25 score to positive value for consistency
             fts_rank: index + 1, // Assign rank based on order (1-based)
+            fts_snippet: (row as RawSearchResult & { fts_score: number; fts_snippet?: string | null }).fts_snippet ?? null,
           });
         });
       }

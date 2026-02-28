@@ -6,6 +6,7 @@ import type { JobInfo } from "../tools";
 import { ToolError } from "../tools/errors";
 import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
+import type { StoreSearchResult } from "../store/types";
 import type { McpServerTools } from "./tools";
 import { createError, createResponse } from "./utils";
 
@@ -172,11 +173,21 @@ export function createMcpServerInstance(
   // Search docs tool
   server.tool(
     "search_docs",
-    "Search up-to-date documentation for a library or package. Examples:\n\n" +
-      '- {library: "react", query: "hooks lifecycle"} -> matches latest version of React\n' +
-      '- {library: "react", version: "18.0.0", query: "hooks lifecycle"} -> matches React 18.0.0 or earlier\n' +
-      '- {library: "typescript", version: "5.x", query: "ReturnType example"} -> any TypeScript 5.x.x version\n' +
-      '- {library: "typescript", version: "5.2.x", query: "ReturnType example"} -> any TypeScript 5.2.x version',
+    "Search indexed documentation for a library. Returns up to `limit` results from a pool of 10 candidates.\n\n" +
+      "Each result header shows its rank out of total candidates (e.g. '#1/7'), search mode, and a relevance label:\n" +
+      "- 'strong match' / 'good match': high confidence — the content directly addresses the query.\n" +
+      "- 'fair match' / 'weak match': low confidence — consider rephrasing or broadening the query.\n\n" +
+      "Search mode in the header tells you what contributed to ranking:\n" +
+      "- 'hybrid': both semantic embedding and keyword search fired — most reliable.\n" +
+      "- 'vector': only semantic similarity matched — keywords were absent but meaning aligned.\n" +
+      "- 'fts': only keyword matching fired — embedding did not contribute; try more descriptive terms if results seem off.\n\n" +
+      "'Matched terms' lines (when present) show the exact keywords that hit, with matches wrapped in **. Use these to judge whether the right concepts were found.\n\n" +
+      "Strategy: start with limit=1 to check relevance cheaply. If the top result is 'strong match' and covers the question, stop. " +
+      "If confidence is low or total candidates > results shown, increase limit or rephrase the query with different terms.\n\n" +
+      "Examples:\n" +
+      '- {library: "react", query: "hooks lifecycle"} — latest React\n' +
+      '- {library: "react", version: "18.0.0", query: "hooks lifecycle"} — React 18.0.0 or earlier\n' +
+      '- {library: "typescript", version: "5.x", query: "ReturnType example"} — any TypeScript 5.x',
     {
       library: z.string().trim().describe("Library name."),
       version: z
@@ -185,7 +196,7 @@ export function createMcpServerInstance(
         .optional()
         .describe("Library version (exact or X-Range, optional)."),
       query: z.string().trim().describe("Documentation search query."),
-      limit: z.number().optional().default(5).describe("Maximum number of results."),
+      limit: z.number().optional().default(1).describe("Number of results to show (1–10, default 1). A low limit keeps context small; use the total count in the response footer to decide if more results are worth fetching."),
     },
     {
       title: "Search Library Documentation",
@@ -212,20 +223,51 @@ export function createMcpServerInstance(
           exactMatch: false, // Always false for MCP interface
         });
 
-        const formattedResults = result.results.map(
-          (r: { url: string; content: string }, i: number) => `
-------------------------------------------------------------
-Result ${i + 1}: ${r.url}
+        // result.results contains up to 10 ranked results; slice to the requested display limit.
+        const total = result.results.length;
+        const displayResults = result.results.slice(0, limit) as StoreSearchResult[];
 
-${r.content}\n`,
-        );
-
-        if (formattedResults.length === 0) {
+        if (displayResults.length === 0) {
           return createResponse(
             `No results found for '${query}' in ${library}. Try to use a different or more general query.`,
           );
         }
-        return createResponse(formattedResults.join(""));
+
+        // Normalize scores relative to the top result (which is always rank #1).
+        // This gives a meaningful 0-100% relevance regardless of the underlying scoring mode.
+        const topScore = (result.results[0] as StoreSearchResult).score ?? 1;
+        const matchLabel = (score: number | null): string => {
+          if (score == null || topScore === 0) return "unknown relevance";
+          const pct = (score / topScore) * 100;
+          if (pct >= 90) return "strong match";
+          if (pct >= 70) return "good match";
+          if (pct >= 45) return "fair match";
+          return "weak match";
+        };
+
+        const formattedResults = displayResults.map((r: StoreSearchResult, i: number) => {
+          const rankTag = `#${i + 1}/${total}`;
+          const matchTag = r.matchedBy ? ` [${r.matchedBy}]` : "";
+          const snippetLine =
+            r.ftsSnippets && r.ftsSnippets.length > 0
+              ? `\nMatched terms: ${r.ftsSnippets.join(" / ")}`
+              : "";
+          return `\n------------------------------------------------------------\nResult ${rankTag}${matchTag} (${matchLabel(r.score)}): ${r.url}${snippetLine}\n\n${r.content}\n`;
+        });
+
+        const n = displayResults.length;
+        const allFts = displayResults.every((r: StoreSearchResult) => r.matchedBy === "fts");
+        const anyVector = displayResults.some(
+          (r: StoreSearchResult) => r.matchedBy === "hybrid" || r.matchedBy === "vector",
+        );
+        const searchMode = anyVector ? "hybrid semantic+keyword" : "keyword-only";
+        const qualityHint = allFts
+          ? " Semantic embedding did not contribute — try more descriptive or conceptual query terms."
+          : "";
+        const moreHint = total > n ? ` Increase \`limit\` to see more (max 10 surfaced).` : "";
+        const countLine = `Showing ${n} of ${total} results (${searchMode}).${qualityHint}${moreHint}`;
+
+        return createResponse(formattedResults.join("") + `\n------------------------------------------------------------\n${countLine}`);
       } catch (error) {
         return createError(error);
       }

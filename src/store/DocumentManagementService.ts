@@ -521,7 +521,7 @@ export class DocumentManagementService {
     library: string,
     version: string | null | undefined,
     query: string,
-    limit = 5,
+    limit = 1,
   ): Promise<StoreSearchResult[]> {
     const normalizedVersion = this.normalizeVersion(version);
     return this.documentRetriever.search(library, normalizedVersion, query, limit);

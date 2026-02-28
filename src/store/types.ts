@@ -62,6 +62,8 @@ export interface DbChunkRank {
   score: number;
   vec_rank?: number;
   fts_rank?: number;
+  /** Short FTS snippet with matched terms wrapped in ** markers, if an FTS hit contributed. */
+  fts_snippet?: string | null;
 }
 
 /**
@@ -77,6 +79,10 @@ export interface StoreSearchResult {
   content: string;
   score: number | null;
   mimeType?: string | null;
+  /** How the matching chunks were found during the initial search phase. */
+  matchedBy?: "hybrid" | "vector" | "fts";
+  /** De-duplicated FTS snippets from the matched chunks, showing which terms hit. */
+  ftsSnippets?: string[];
 }
 
 /**

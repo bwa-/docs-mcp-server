@@ -29,11 +29,14 @@ export class DocumentRetrieverService {
     // Normalize version: null/undefined becomes empty string, then lowercase
     const normalizedVersion = (version ?? "").toLowerCase();
 
+    // Always fetch up to 10 top results from the DB regardless of the display limit.
+    // The caller (MCP layer) slices to the requested display count and uses the total
+    // to give the agent a quality signal ("showing 1 of 7" vs "showing 1 of 1").
     const initialResults = await this.documentStore.findByContent(
       library,
       normalizedVersion,
       query,
-      limit ?? 10,
+      10,
     );
 
     if (initialResults.length === 0) {
@@ -107,6 +110,19 @@ export class DocumentRetrieverService {
     // Find the maximum score from the initial results
     const maxScore = Math.max(...initialChunks.map((chunk) => chunk.score));
 
+    // Determine how the matching chunks were found (before context expansion)
+    const hasVec = initialChunks.some((c) => c.vec_rank !== undefined);
+    const hasFts = initialChunks.some((c) => c.fts_rank !== undefined);
+    const matchedBy: StoreSearchResult["matchedBy"] =
+      hasVec && hasFts ? "hybrid" : hasVec ? "vector" : "fts";
+
+    // Collect de-duplicated FTS snippets from matching chunks
+    const snippetSet = new Set<string>();
+    for (const chunk of initialChunks) {
+      if (chunk.fts_snippet) snippetSet.add(chunk.fts_snippet.trim());
+    }
+    const ftsSnippets = snippetSet.size > 0 ? Array.from(snippetSet) : undefined;
+
     // Create appropriate assembly strategy based on content type
     const strategy = createContentAssemblyStrategy(mimeType, this.config);
 
@@ -125,6 +141,8 @@ export class DocumentRetrieverService {
       content,
       score: maxScore,
       mimeType,
+      matchedBy,
+      ftsSnippets,
     };
   }
 
