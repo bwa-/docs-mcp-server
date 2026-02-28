@@ -1,12 +1,12 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
 import { PipelineJobStatus } from "../pipeline/types";
+import type { StoreSearchResult } from "../store/types";
 import { TelemetryEvent, telemetry } from "../telemetry";
 import type { JobInfo } from "../tools";
 import { ToolError } from "../tools/errors";
 import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
-import type { StoreSearchResult } from "../store/types";
 import type { McpServerTools } from "./tools";
 import { createError, createResponse } from "./utils";
 
@@ -196,7 +196,13 @@ export function createMcpServerInstance(
         .optional()
         .describe("Library version (exact or X-Range, optional)."),
       query: z.string().trim().describe("Documentation search query."),
-      limit: z.number().optional().default(1).describe("Number of results to show (1–10, default 1). A low limit keeps context small; use the total count in the response footer to decide if more results are worth fetching."),
+      limit: z
+        .number()
+        .optional()
+        .default(1)
+        .describe(
+          "Number of results to show (1–10, default 1). A low limit keeps context small; use the total count in the response footer to decide if more results are worth fetching.",
+        ),
     },
     {
       title: "Search Library Documentation",
@@ -245,6 +251,23 @@ export function createMcpServerInstance(
           return "weak match";
         };
 
+        const n = displayResults.length;
+        const allFts = displayResults.every(
+          (r: StoreSearchResult) => r.matchedBy === "fts",
+        );
+        const anyVector = displayResults.some(
+          (r: StoreSearchResult) => r.matchedBy === "hybrid" || r.matchedBy === "vector",
+        );
+        const searchMode = anyVector ? "hybrid semantic+keyword" : "keyword-only";
+        const qualityHint = allFts
+          ? " Semantic embedding did not contribute — try more descriptive or conceptual query terms."
+          : "";
+        const moreHint =
+          total > n ? ` Increase \`limit\` to see more (max 10 surfaced).` : "";
+        const countLine = `Showing ${n} of ${total} results (${searchMode}).${qualityHint}${moreHint}`;
+        const legendLine =
+          "Match quality: strong match (≥90% of top score) = directly relevant; good match (≥70%) = closely related; fair match (≥45%) = partial overlap; weak match (<45%) = marginally relevant.";
+
         const formattedResults = displayResults.map((r: StoreSearchResult, i: number) => {
           const rankTag = `#${i + 1}/${total}`;
           const matchTag = r.matchedBy ? ` [${r.matchedBy}]` : "";
@@ -255,19 +278,11 @@ export function createMcpServerInstance(
           return `\n------------------------------------------------------------\nResult ${rankTag}${matchTag} (${matchLabel(r.score)}): ${r.url}${snippetLine}\n\n${r.content}\n`;
         });
 
-        const n = displayResults.length;
-        const allFts = displayResults.every((r: StoreSearchResult) => r.matchedBy === "fts");
-        const anyVector = displayResults.some(
-          (r: StoreSearchResult) => r.matchedBy === "hybrid" || r.matchedBy === "vector",
+        return createResponse(
+          `${countLine}\n${legendLine}` +
+            formattedResults.join("") +
+            "\n------------------------------------------------------------",
         );
-        const searchMode = anyVector ? "hybrid semantic+keyword" : "keyword-only";
-        const qualityHint = allFts
-          ? " Semantic embedding did not contribute — try more descriptive or conceptual query terms."
-          : "";
-        const moreHint = total > n ? ` Increase \`limit\` to see more (max 10 surfaced).` : "";
-        const countLine = `Showing ${n} of ${total} results (${searchMode}).${qualityHint}${moreHint}`;
-
-        return createResponse(formattedResults.join("") + `\n------------------------------------------------------------\n${countLine}`);
       } catch (error) {
         return createError(error);
       }
