@@ -327,11 +327,9 @@ describe("DocumentStore - With Embeddings", () => {
         .prepare(`
         SELECT p.etag, p.last_modified
         FROM pages p
-        JOIN versions v ON p.version_id = v.id
-        JOIN libraries l ON v.library_id = l.id
-        WHERE l.name = ? AND COALESCE(v.name, '') = ? AND p.url = ?
+        WHERE p.url = ?
       `)
-        .get("etagtest", "1.0.0", "https://example.com/etag-test") as
+        .get("https://example.com/etag-test") as
         | {
             etag: string | null;
             last_modified: string | null;
@@ -1137,15 +1135,18 @@ describe("DocumentStore - Common Functionality", () => {
 
       // Helper function to count documents
       async function countDocuments(targetUrl?: string): Promise<number> {
+        const versionId = (store as any).configStore.getVersionId(
+          library.toLowerCase(),
+          version.toLowerCase(),
+        );
+        if (versionId === null) return 0;
         let query = `
           SELECT COUNT(*) as count
           FROM documents d
           JOIN pages p ON d.page_id = p.id
-          JOIN versions v ON p.version_id = v.id  
-          JOIN libraries l ON v.library_id = l.id
-          WHERE l.name = ? AND COALESCE(v.name, '') = ?
+          WHERE p.version_id = ?
         `;
-        const params: any[] = [library.toLowerCase(), version.toLowerCase()];
+        const params: (string | number)[] = [versionId];
 
         if (targetUrl) {
           query += " AND p.url = ?";

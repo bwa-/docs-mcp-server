@@ -51,6 +51,11 @@ export async function applyMigrations(
 ): Promise<void> {
   const maxRetries = options?.maxRetries ?? 5;
   const retryDelayMs = options?.retryDelayMs ?? 300;
+  // Disable FK constraints before migrations - some DDL in migrations (e.g. DROP TABLE,
+  // table recreation) would otherwise fail if FK was left ON from a previous connection.
+  // Note: foreign_keys cannot be changed inside a transaction, so this must come first.
+  db.pragma("foreign_keys = OFF");
+
   // Apply performance optimizations for large dataset migrations
   try {
     db.pragma("journal_mode = OFF");

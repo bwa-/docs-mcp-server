@@ -11,6 +11,7 @@ import { telemetry } from "../telemetry";
 import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
 import { sortVersionsDescending } from "../utils/version";
+import { ConfigStore } from "./ConfigStore";
 import { DocumentRetrieverService } from "./DocumentRetrieverService";
 import { DocumentStore } from "./DocumentStore";
 import type { EmbeddingModelConfig } from "./embeddings/EmbeddingConfig";
@@ -51,12 +52,15 @@ export class DocumentManagementService {
     // Handle special :memory: case for in-memory databases (primarily for testing)
     const dbPath =
       storePath === ":memory:" ? ":memory:" : path.join(storePath, "documents.db");
+    const configPath =
+      storePath === ":memory:" ? ":memory:" : path.join(storePath, "config.json");
 
     logger.debug(`Using database path: ${dbPath}`);
 
     // Directory creation is handled by the centralized path resolution
 
-    this.store = new DocumentStore(dbPath, this.appConfig);
+    const configStore = new ConfigStore(configPath);
+    this.store = new DocumentStore(dbPath, this.appConfig, configStore);
     this.documentRetriever = new DocumentRetrieverService(this.store, this.appConfig);
 
     // Initialize content pipelines for different content types including universal TextPipeline fallback

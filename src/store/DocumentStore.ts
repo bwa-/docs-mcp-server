@@ -6,6 +6,7 @@ import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
 import { compareVersionsDescending } from "../utils/version";
 import { applyMigrations } from "./applyMigrations";
+import { ConfigStore } from "./ConfigStore";
 import { EmbeddingConfig, type EmbeddingModelConfig } from "./embeddings/EmbeddingConfig";
 import {
   areCredentialsAvailable,
@@ -14,19 +15,17 @@ import {
   UnsupportedProviderError,
 } from "./embeddings/EmbeddingFactory";
 import { ConnectionError, DimensionError, StoreError } from "./errors";
-import type { DbChunkMetadata, DbChunkRank, StoredScraperOptions } from "./types";
-import {
-  type DbChunk,
-  type DbLibraryVersion,
-  type DbPage,
-  type DbPageChunk,
-  type DbQueryResult,
-  type DbVersion,
-  type DbVersionWithLibrary,
-  denormalizeVersionName,
-  normalizeVersionName,
-  type VersionScraperOptions,
-  type VersionStatus,
+import type {
+  DbChunk,
+  DbChunkMetadata,
+  DbChunkRank,
+  DbPage,
+  DbPageChunk,
+  DbQueryResult,
+  DbVersion,
+  DbVersionWithLibrary,
+  StoredScraperOptions,
+  VersionStatus,
 } from "./types";
 
 interface RawSearchResult extends DbChunk {
@@ -54,6 +53,7 @@ interface RankedResult extends RawSearchResult {
  */
 export class DocumentStore {
   private readonly config: AppConfig;
+  private readonly configStore: ConfigStore;
 
   private readonly db: DatabaseType;
   private embeddings!: Embeddings;
@@ -83,53 +83,23 @@ export class DocumentStore {
 
   private statements!: {
     getById: Database.Statement<[bigint]>;
-    // Updated for new schema - documents table now uses page_id
     insertDocument: Database.Statement<[number, string, string, number]>;
-    // Updated for new schema - embeddings stored directly in documents table
     insertEmbedding: Database.Statement<[string, bigint]>;
-    // New statement for pages table
     insertPage: Database.Statement<
       [number, string, string, string | null, string | null, string | null, number | null]
     >;
     getPageId: Database.Statement<[number, string]>;
-    deleteDocuments: Database.Statement<[string, string]>;
+    // version_id-based data operations (library/version resolved via ConfigStore)
+    deleteDocuments: Database.Statement<[number]>;
     deleteDocumentsByPageId: Database.Statement<[number]>;
     deletePage: Database.Statement<[number]>;
-    deletePages: Database.Statement<[string, string]>;
-    queryVersions: Database.Statement<[string]>;
-    checkExists: Database.Statement<[string, string]>;
-    queryLibraryVersions: Database.Statement<[]>;
-    getChildChunks: Database.Statement<
-      [string, string, string, number, string, bigint, number]
-    >;
-    getPrecedingSiblings: Database.Statement<
-      [string, string, string, bigint, string, number]
-    >;
-    getSubsequentSiblings: Database.Statement<
-      [string, string, string, bigint, string, number]
-    >;
-    getParentChunk: Database.Statement<[string, string, string, string, bigint]>;
-    insertLibrary: Database.Statement<[string]>;
-    getLibraryIdByName: Database.Statement<[string]>;
-    getLibraryById: Database.Statement<[number]>;
-    // New version-related statements
-    insertVersion: Database.Statement<[number, string | null]>;
-    resolveVersionId: Database.Statement<[number, string | null]>;
-    getVersionById: Database.Statement<[number]>;
-    queryVersionsByLibraryId: Database.Statement<[number]>;
-    // Status tracking statements
-    updateVersionStatus: Database.Statement<[string, string | null, number]>;
-    updateVersionProgress: Database.Statement<[number, number, number]>;
-    getVersionsByStatus: Database.Statement<string[]>;
-    // Scraper options statements
-    updateVersionScraperOptions: Database.Statement<[string, string, number]>;
-    getVersionWithOptions: Database.Statement<[number]>;
-    getVersionsBySourceUrl: Database.Statement<[string]>;
-    // Version and library deletion statements
-    deleteVersionById: Database.Statement<[number]>;
-    deleteLibraryById: Database.Statement<[number]>;
-    countVersionsByLibraryId: Database.Statement<[number]>;
-    getVersionId: Database.Statement<[string, string]>;
+    deletePages: Database.Statement<[number]>;
+    checkExists: Database.Statement<[number]>;
+    getDocumentCountsForVersion: Database.Statement<[number]>;
+    getChildChunks: Database.Statement<[number, string, number, string, bigint, number]>;
+    getPrecedingSiblings: Database.Statement<[number, string, bigint, string, number]>;
+    getSubsequentSiblings: Database.Statement<[number, string, bigint, string, number]>;
+    getParentChunk: Database.Statement<[number, string, string, bigint]>;
     getPagesByVersionId: Database.Statement<[number]>;
   };
 
@@ -183,7 +153,7 @@ export class DocumentStore {
     }));
   }
 
-  constructor(dbPath: string, appConfig: AppConfig) {
+  constructor(dbPath: string, appConfig: AppConfig, configStore?: ConfigStore) {
     if (!dbPath) {
       throw new StoreError("Missing required database path");
     }
@@ -200,6 +170,9 @@ export class DocumentStore {
 
     // Only establish database connection in constructor
     this.db = new Database(dbPath);
+
+    // Use provided ConfigStore or create an in-memory one (for testing)
+    this.configStore = configStore ?? new ConfigStore(":memory:");
 
     // Store embedding config for later initialization
     this.embeddingConfig = this.resolveEmbeddingConfig(appConfig.app.embeddingModel);
@@ -222,7 +195,8 @@ export class DocumentStore {
   }
 
   /**
-   * Sets up prepared statements for database queries
+   * Sets up prepared statements for database queries.
+   * All queries filter by version_id (integer), resolved via ConfigStore.
    */
   private prepareStatements(): void {
     const statements = {
@@ -232,7 +206,6 @@ export class DocumentStore {
          JOIN pages p ON d.page_id = p.id
          WHERE d.id = ?`,
       ),
-      // Updated for new schema
       insertDocument: this.db.prepare<[number, string, string, number]>(
         "INSERT INTO documents (page_id, content, metadata, sort_order) VALUES (?, ?, ?, ?)",
       ),
@@ -255,103 +228,33 @@ export class DocumentStore {
       getPageId: this.db.prepare<[number, string]>(
         "SELECT id FROM pages WHERE version_id = ? AND url = ?",
       ),
-      insertLibrary: this.db.prepare<[string]>(
-        "INSERT INTO libraries (name) VALUES (?) ON CONFLICT(name) DO NOTHING",
-      ),
-      getLibraryIdByName: this.db.prepare<[string]>(
-        "SELECT id FROM libraries WHERE name = ?",
-      ),
-      getLibraryById: this.db.prepare<[number]>("SELECT * FROM libraries WHERE id = ?"),
-      // New version-related statements
-      insertVersion: this.db.prepare<[number, string]>(
-        "INSERT INTO versions (library_id, name, status) VALUES (?, ?, 'not_indexed') ON CONFLICT(library_id, name) DO NOTHING",
-      ),
-      resolveVersionId: this.db.prepare<[number, string]>(
-        "SELECT id FROM versions WHERE library_id = ? AND name = ?",
-      ),
-      getVersionById: this.db.prepare<[number]>("SELECT * FROM versions WHERE id = ?"),
-      queryVersionsByLibraryId: this.db.prepare<[number]>(
-        "SELECT * FROM versions WHERE library_id = ? ORDER BY name",
-      ),
-      deleteDocuments: this.db.prepare<[string, string]>(
-        `DELETE FROM documents 
-         WHERE page_id IN (
-           SELECT p.id FROM pages p
-           JOIN versions v ON p.version_id = v.id
-           JOIN libraries l ON v.library_id = l.id
-           WHERE l.name = ? AND COALESCE(v.name, '') = COALESCE(?, '')
-         )`,
+      deleteDocuments: this.db.prepare<[number]>(
+        "DELETE FROM documents WHERE page_id IN (SELECT id FROM pages WHERE version_id = ?)",
       ),
       deleteDocumentsByPageId: this.db.prepare<[number]>(
         "DELETE FROM documents WHERE page_id = ?",
       ),
       deletePage: this.db.prepare<[number]>("DELETE FROM pages WHERE id = ?"),
-      deletePages: this.db.prepare<[string, string]>(
-        `DELETE FROM pages 
-         WHERE version_id IN (
-           SELECT v.id FROM versions v
-           JOIN libraries l ON v.library_id = l.id
-           WHERE l.name = ? AND COALESCE(v.name, '') = COALESCE(?, '')
-         )`,
-      ),
-      getDocumentBySort: this.db.prepare<[string, string]>(
-        `SELECT d.id
-         FROM documents d
-         JOIN pages p ON d.page_id = p.id
-         JOIN versions v ON p.version_id = v.id
-         JOIN libraries l ON v.library_id = l.id
-         WHERE l.name = ?
-         AND COALESCE(v.name, '') = COALESCE(?, '')
-         LIMIT 1`,
-      ),
-      queryVersions: this.db.prepare<[string]>(
-        `SELECT DISTINCT v.name
-         FROM versions v
-         JOIN libraries l ON v.library_id = l.id
-         WHERE l.name = ?
-         ORDER BY v.name`,
-      ),
-      checkExists: this.db.prepare<[string, string]>(
+      deletePages: this.db.prepare<[number]>("DELETE FROM pages WHERE version_id = ?"),
+      checkExists: this.db.prepare<[number]>(
         `SELECT d.id FROM documents d
          JOIN pages p ON d.page_id = p.id
-         JOIN versions v ON p.version_id = v.id
-         JOIN libraries l ON v.library_id = l.id
-         WHERE l.name = ?
-         AND COALESCE(v.name, '') = COALESCE(?, '')
+         WHERE p.version_id = ?
          LIMIT 1`,
       ),
-      // Library/version aggregation including versions without documents and status/progress fields
-      queryLibraryVersions: this.db.prepare<[]>(
+      getDocumentCountsForVersion: this.db.prepare<[number]>(
         `SELECT
-          l.name as library,
-          l.description as libraryDescription,
-          l.delay_between_pages_ms as libraryDelayMs,
-          l.max_retries as libraryMaxRetries,
-          COALESCE(v.name, '') as version,
-          v.id as versionId,
-          v.status as status,
-          v.progress_pages as progressPages,
-          v.progress_max_pages as progressMaxPages,
-          v.source_url as sourceUrl,
           MIN(p.created_at) as indexedAt,
           COUNT(d.id) as documentCount,
           COUNT(DISTINCT p.url) as uniqueUrlCount
-        FROM versions v
-        JOIN libraries l ON v.library_id = l.id
-        LEFT JOIN pages p ON p.version_id = v.id
-        LEFT JOIN documents d ON d.page_id = p.id
-        GROUP BY v.id
-        ORDER BY l.name, version`,
+         FROM pages p
+         LEFT JOIN documents d ON d.page_id = p.id
+         WHERE p.version_id = ?`,
       ),
-      getChildChunks: this.db.prepare<
-        [string, string, string, number, string, bigint, number]
-      >(`
+      getChildChunks: this.db.prepare<[number, string, number, string, bigint, number]>(`
         SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.content_type FROM documents d
         JOIN pages p ON d.page_id = p.id
-        JOIN versions v ON p.version_id = v.id
-        JOIN libraries l ON v.library_id = l.id
-        WHERE l.name = ?
-        AND COALESCE(v.name, '') = COALESCE(?, '')
+        WHERE p.version_id = ?
         AND p.url = ?
         AND json_array_length(json_extract(d.metadata, '$.path')) = ?
         AND json_extract(d.metadata, '$.path') LIKE ? || '%'
@@ -359,80 +262,36 @@ export class DocumentStore {
         ORDER BY d.sort_order
         LIMIT ?
       `),
-      getPrecedingSiblings: this.db.prepare<
-        [string, string, string, bigint, string, number]
-      >(`
+      getPrecedingSiblings: this.db.prepare<[number, string, bigint, string, number]>(`
         SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.content_type FROM documents d
         JOIN pages p ON d.page_id = p.id
-        JOIN versions v ON p.version_id = v.id
-        JOIN libraries l ON v.library_id = l.id
-        WHERE l.name = ?
-        AND COALESCE(v.name, '') = COALESCE(?, '')
+        WHERE p.version_id = ?
         AND p.url = ?
         AND d.sort_order < (SELECT sort_order FROM documents WHERE id = ?)
         AND json_extract(d.metadata, '$.path') = ?
         ORDER BY d.sort_order DESC
         LIMIT ?
       `),
-      getSubsequentSiblings: this.db.prepare<
-        [string, string, string, bigint, string, number]
-      >(`
+      getSubsequentSiblings: this.db.prepare<[number, string, bigint, string, number]>(`
         SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.content_type FROM documents d
         JOIN pages p ON d.page_id = p.id
-        JOIN versions v ON p.version_id = v.id
-        JOIN libraries l ON v.library_id = l.id
-        WHERE l.name = ?
-        AND COALESCE(v.name, '') = COALESCE(?, '')
+        WHERE p.version_id = ?
         AND p.url = ?
         AND d.sort_order > (SELECT sort_order FROM documents WHERE id = ?)
         AND json_extract(d.metadata, '$.path') = ?
         ORDER BY d.sort_order
         LIMIT ?
       `),
-      getParentChunk: this.db.prepare<[string, string, string, string, bigint]>(`
+      getParentChunk: this.db.prepare<[number, string, string, bigint]>(`
         SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.content_type FROM documents d
         JOIN pages p ON d.page_id = p.id
-        JOIN versions v ON p.version_id = v.id
-        JOIN libraries l ON v.library_id = l.id
-        WHERE l.name = ?
-        AND COALESCE(v.name, '') = COALESCE(?, '')
+        WHERE p.version_id = ?
         AND p.url = ?
         AND json_extract(d.metadata, '$.path') = ?
         AND d.sort_order < (SELECT sort_order FROM documents WHERE id = ?)
         ORDER BY d.sort_order DESC
         LIMIT 1
       `),
-      // Status tracking statements
-      updateVersionStatus: this.db.prepare<[string, string | null, number]>(
-        "UPDATE versions SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      ),
-      updateVersionProgress: this.db.prepare<[number, number, number]>(
-        "UPDATE versions SET progress_pages = ?, progress_max_pages = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      ),
-      getVersionsByStatus: this.db.prepare<[string]>(
-        "SELECT v.*, l.name as library_name FROM versions v JOIN libraries l ON v.library_id = l.id WHERE v.status IN (SELECT value FROM json_each(?))",
-      ),
-      // Scraper options statements
-      updateVersionScraperOptions: this.db.prepare<[string, string, number]>(
-        "UPDATE versions SET source_url = ?, scraper_options = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      ),
-      getVersionWithOptions: this.db.prepare<[number]>(
-        "SELECT * FROM versions WHERE id = ?",
-      ),
-      getVersionsBySourceUrl: this.db.prepare<[string]>(
-        "SELECT v.*, l.name as library_name FROM versions v JOIN libraries l ON v.library_id = l.id WHERE v.source_url = ? ORDER BY v.created_at DESC",
-      ),
-      // Version and library deletion statements
-      deleteVersionById: this.db.prepare<[number]>("DELETE FROM versions WHERE id = ?"),
-      deleteLibraryById: this.db.prepare<[number]>("DELETE FROM libraries WHERE id = ?"),
-      countVersionsByLibraryId: this.db.prepare<[number]>(
-        "SELECT COUNT(*) as count FROM versions WHERE library_id = ?",
-      ),
-      getVersionId: this.db.prepare<[string, string]>(
-        `SELECT v.id, v.library_id FROM versions v
-         JOIN libraries l ON v.library_id = l.id
-         WHERE l.name = ? AND COALESCE(v.name, '') = COALESCE(?, '')`,
-      ),
       getPagesByVersionId: this.db.prepare<[number]>(
         "SELECT * FROM pages WHERE version_id = ?",
       ),
@@ -680,16 +539,20 @@ export class DocumentStore {
       // 1. Load extensions first (moved before migrations)
       sqliteVec.load(this.db);
 
-      // 2. Apply migrations (after extensions are loaded)
+      // 2. Initialize ConfigStore - exports library/version data from SQLite to config.json
+      //    MUST happen before applyMigrations, as migration 014 drops the versions/libraries tables
+      this.configStore.initialize(this.db);
+
+      // 3. Apply migrations (after extensions are loaded and config exported)
       await applyMigrations(this.db, {
         maxRetries: this.config.db.migrationMaxRetries,
         retryDelayMs: this.config.db.migrationRetryDelayMs,
       });
 
-      // 3. Initialize prepared statements
+      // 4. Initialize prepared statements
       this.prepareStatements();
 
-      // 4. Initialize embeddings client (await to catch errors)
+      // 5. Initialize embeddings client (await to catch errors)
       await this.initializeEmbeddings();
     } catch (error) {
       // Re-throw StoreError, ModelConfigurationError, and UnsupportedProviderError directly
@@ -720,28 +583,7 @@ export class DocumentStore {
     maxRetries: number | null;
     description: string | null;
   } | null {
-    const normalizedLibrary = library.toLowerCase();
-    const stmt = this.db.prepare<[string]>(`
-      SELECT delay_between_pages_ms, max_retries, description
-      FROM libraries
-      WHERE name = ?
-    `);
-
-    const result = stmt.get(normalizedLibrary) as
-      | {
-          delay_between_pages_ms: number | null;
-          max_retries: number | null;
-          description: string | null;
-        }
-      | undefined;
-
-    if (!result) return null;
-
-    return {
-      delayBetweenPagesMs: result.delay_between_pages_ms ?? 0,
-      maxRetries: result.max_retries,
-      description: result.description,
-    };
+    return this.configStore.getLibrarySettings(library);
   }
 
   /**
@@ -756,37 +598,7 @@ export class DocumentStore {
       description?: string | null;
     },
   ): void {
-    const normalizedLibrary = library.toLowerCase();
-
-    // Ensure library exists
-    this.statements.insertLibrary.run(normalizedLibrary);
-
-    // Update settings (only update provided fields)
-    const updates: string[] = [];
-    const values: (number | string | null)[] = [];
-
-    if (settings.delayBetweenPagesMs !== undefined) {
-      updates.push("delay_between_pages_ms = ?");
-      values.push(settings.delayBetweenPagesMs);
-    }
-    if (settings.maxRetries !== undefined) {
-      updates.push("max_retries = ?");
-      values.push(settings.maxRetries);
-    }
-    if (settings.description !== undefined) {
-      updates.push("description = ?");
-      values.push(settings.description);
-    }
-
-    if (updates.length > 0) {
-      values.push(normalizedLibrary);
-      const stmt = this.db.prepare(`
-        UPDATE libraries
-        SET ${updates.join(", ")}
-        WHERE name = ?
-      `);
-      stmt.run(...values);
-    }
+    this.configStore.updateLibrarySettings(library, settings);
   }
 
   /**
@@ -794,33 +606,7 @@ export class DocumentStore {
    * Creates library and version records if they don't exist.
    */
   async resolveVersionId(library: string, version: string): Promise<number> {
-    const normalizedLibrary = library.toLowerCase();
-    const normalizedVersion = denormalizeVersionName(version.toLowerCase());
-
-    // Insert or get library_id
-    this.statements.insertLibrary.run(normalizedLibrary);
-    const libraryIdRow = this.statements.getLibraryIdByName.get(normalizedLibrary) as
-      | { id: number }
-      | undefined;
-    if (!libraryIdRow || typeof libraryIdRow.id !== "number") {
-      throw new StoreError(`Failed to resolve library_id for library: ${library}`);
-    }
-    const libraryId = libraryIdRow.id;
-
-    // Insert or get version_id
-    // Reuse existing unversioned entry if present; storing '' ensures UNIQUE constraint applies
-    this.statements.insertVersion.run(libraryId, normalizedVersion);
-    const versionIdRow = this.statements.resolveVersionId.get(
-      libraryId,
-      normalizedVersion,
-    ) as { id: number } | undefined;
-    if (!versionIdRow || typeof versionIdRow.id !== "number") {
-      throw new StoreError(
-        `Failed to resolve version_id for library: ${library}, version: ${version}`,
-      );
-    }
-
-    return versionIdRow.id;
+    return this.configStore.resolveVersion(library, version);
   }
 
   /**
@@ -828,17 +614,14 @@ export class DocumentStore {
    */
   async queryUniqueVersions(library: string): Promise<string[]> {
     try {
-      const rows = this.statements.queryVersions.all(library.toLowerCase()) as Array<{
-        name: string | null;
-      }>;
-      return rows.map((row) => normalizeVersionName(row.name));
+      return this.configStore.getUniqueVersionNames(library);
     } catch (error) {
       throw new ConnectionError("Failed to query versions", error);
     }
   }
 
   /**
-   * Updates the status of a version record in the database.
+   * Updates the status of a version record.
    * @param versionId The version ID to update
    * @param status The new status to set
    * @param errorMessage Optional error message for failed statuses
@@ -849,7 +632,7 @@ export class DocumentStore {
     errorMessage?: string,
   ): Promise<void> {
     try {
-      this.statements.updateVersionStatus.run(status, errorMessage ?? null, versionId);
+      this.configStore.updateVersionStatus(versionId, status, errorMessage);
     } catch (error) {
       throw new StoreError(`Failed to update version status: ${error}`);
     }
@@ -867,7 +650,7 @@ export class DocumentStore {
     maxPages: number,
   ): Promise<void> {
     try {
-      this.statements.updateVersionProgress.run(pages, maxPages, versionId);
+      this.configStore.updateVersionProgress(versionId, pages, maxPages);
     } catch (error) {
       throw new StoreError(`Failed to update version progress: ${error}`);
     }
@@ -880,11 +663,21 @@ export class DocumentStore {
    */
   async getVersionsByStatus(statuses: VersionStatus[]): Promise<DbVersionWithLibrary[]> {
     try {
-      const statusJson = JSON.stringify(statuses);
-      const rows = this.statements.getVersionsByStatus.all(
-        statusJson,
-      ) as DbVersionWithLibrary[];
-      return rows;
+      return this.configStore.getVersionsByStatus(statuses).map((v) => ({
+        id: v.id,
+        library_id: v.libraryId,
+        name: v.name || null,
+        created_at: v.createdAt,
+        status: v.status,
+        progress_pages: v.progressPages,
+        progress_max_pages: v.progressMaxPages,
+        error_message: v.errorMessage,
+        started_at: v.startedAt,
+        updated_at: v.updatedAt,
+        source_url: v.sourceUrl,
+        scraper_options: v.scraperOptions,
+        library_name: v.libraryName,
+      }));
     } catch (error) {
       throw new StoreError(`Failed to get versions by status: ${error}`);
     }
@@ -897,8 +690,22 @@ export class DocumentStore {
    */
   async getVersionById(versionId: number): Promise<DbVersion | null> {
     try {
-      const row = this.statements.getVersionById.get(versionId) as DbVersion | undefined;
-      return row || null;
+      const v = this.configStore.getVersionById(versionId);
+      if (!v) return null;
+      return {
+        id: v.id,
+        library_id: v.libraryId,
+        name: v.name || null,
+        created_at: v.createdAt,
+        status: v.status,
+        progress_pages: v.progressPages,
+        progress_max_pages: v.progressMaxPages,
+        error_message: v.errorMessage,
+        started_at: v.startedAt,
+        updated_at: v.updatedAt,
+        source_url: v.sourceUrl,
+        scraper_options: v.scraperOptions,
+      };
     } catch (error) {
       throw new StoreError(`Failed to get version by ID: ${error}`);
     }
@@ -911,10 +718,9 @@ export class DocumentStore {
    */
   async getLibraryById(libraryId: number): Promise<{ id: number; name: string } | null> {
     try {
-      const row = this.statements.getLibraryById.get(libraryId) as
-        | { id: number; name: string }
-        | undefined;
-      return row || null;
+      const lib = this.configStore.getLibraryById(libraryId);
+      if (!lib) return null;
+      return { id: lib.id, name: lib.name };
     } catch (error) {
       throw new StoreError(`Failed to get library by ID: ${error}`);
     }
@@ -927,14 +733,9 @@ export class DocumentStore {
    */
   async getLibrary(name: string): Promise<{ id: number; name: string } | null> {
     try {
-      const normalizedName = name.toLowerCase();
-      const row = this.statements.getLibraryIdByName.get(normalizedName) as
-        | { id: number }
-        | undefined;
-      if (!row) {
-        return null;
-      }
-      return { id: row.id, name: normalizedName };
+      const lib = this.configStore.getLibraryByName(name);
+      if (!lib) return null;
+      return { id: lib.id, name: lib.name };
     } catch (error) {
       throw new StoreError(`Failed to get library by name: ${error}`);
     }
@@ -942,12 +743,11 @@ export class DocumentStore {
 
   /**
    * Deletes a library by its ID.
-   * This should only be called when the library has no remaining versions.
    * @param libraryId The library ID to delete
    */
   async deleteLibrary(libraryId: number): Promise<void> {
     try {
-      this.statements.deleteLibraryById.run(libraryId);
+      this.configStore.deleteLibrary(libraryId);
     } catch (error) {
       throw new StoreError(`Failed to delete library: ${error}`);
     }
@@ -972,7 +772,7 @@ export class DocumentStore {
       } = options;
 
       const optionsJson = JSON.stringify(scraper_options);
-      this.statements.updateVersionScraperOptions.run(source_url, optionsJson, versionId);
+      this.configStore.storeScraperOptions(versionId, source_url, optionsJson);
     } catch (error) {
       throw new StoreError(`Failed to store scraper options: ${error}`);
     }
@@ -984,25 +784,7 @@ export class DocumentStore {
    */
   async getScraperOptions(versionId: number): Promise<StoredScraperOptions | null> {
     try {
-      const row = this.statements.getVersionWithOptions.get(versionId) as
-        | DbVersion
-        | undefined;
-
-      if (!row?.source_url) {
-        return null;
-      }
-
-      let parsed: VersionScraperOptions = {} as VersionScraperOptions;
-      if (row.scraper_options) {
-        try {
-          parsed = JSON.parse(row.scraper_options) as VersionScraperOptions;
-        } catch (e) {
-          logger.warn(`⚠️  Invalid scraper_options JSON for version ${versionId}: ${e}`);
-          parsed = {} as VersionScraperOptions;
-        }
-      }
-
-      return { sourceUrl: row.source_url, options: parsed };
+      return this.configStore.getScraperOptions(versionId);
     } catch (error) {
       throw new StoreError(`Failed to get scraper options: ${error}`);
     }
@@ -1016,10 +798,21 @@ export class DocumentStore {
    */
   async findVersionsBySourceUrl(url: string): Promise<DbVersionWithLibrary[]> {
     try {
-      const rows = this.statements.getVersionsBySourceUrl.all(
-        url,
-      ) as DbVersionWithLibrary[];
-      return rows;
+      return this.configStore.findVersionsBySourceUrl(url).map((v) => ({
+        id: v.id,
+        library_id: v.libraryId,
+        name: v.name || null,
+        created_at: v.createdAt,
+        status: v.status,
+        progress_pages: v.progressPages,
+        progress_max_pages: v.progressMaxPages,
+        error_message: v.errorMessage,
+        started_at: v.startedAt,
+        updated_at: v.updatedAt,
+        source_url: v.sourceUrl,
+        scraper_options: v.scraperOptions,
+        library_name: v.libraryName,
+      }));
     } catch (error) {
       throw new StoreError(`Failed to find versions by source URL: ${error}`);
     }
@@ -1030,11 +823,12 @@ export class DocumentStore {
    */
   async checkDocumentExists(library: string, version: string): Promise<boolean> {
     try {
-      const normalizedVersion = version.toLowerCase();
-      const result = this.statements.checkExists.get(
+      const versionId = this.configStore.getVersionId(
         library.toLowerCase(),
-        normalizedVersion,
+        version.toLowerCase(),
       );
+      if (versionId === null) return false;
+      const result = this.statements.checkExists.get(versionId);
       return result !== undefined;
     } catch (error) {
       throw new ConnectionError("Failed to check document existence", error);
@@ -1043,6 +837,7 @@ export class DocumentStore {
 
   /**
    * Retrieves a mapping of all libraries to their available versions with details.
+   * Combines ConfigStore metadata with SQLite document counts.
    */
   async queryLibraryVersions(): Promise<
     Map<
@@ -1064,11 +859,6 @@ export class DocumentStore {
     >
   > {
     try {
-      const rows = this.statements.queryLibraryVersions.all() as (DbLibraryVersion & {
-        libraryDescription: string | null;
-        libraryDelayMs: number;
-        libraryMaxRetries: number | null;
-      })[];
       const libraryMap = new Map<
         string,
         Array<{
@@ -1087,36 +877,38 @@ export class DocumentStore {
         }>
       >();
 
-      for (const row of rows) {
-        // Process all rows, including those where version is "" (unversioned)
-        const library = row.library;
-        if (!libraryMap.has(library)) {
-          libraryMap.set(library, []);
-        }
+      for (const lib of this.configStore.getAllLibraries()) {
+        const versions = this.configStore.getVersionsForLibrary(lib.id);
+        if (versions.length === 0) continue;
 
-        // Format indexedAt to ISO string if available
-        const indexedAtISO = row.indexedAt ? new Date(row.indexedAt).toISOString() : null;
+        const versionEntries = versions.map((v) => {
+          const counts = this.statements.getDocumentCountsForVersion.get(v.id) as
+            | { indexedAt: string | null; documentCount: number; uniqueUrlCount: number }
+            | undefined;
 
-        libraryMap.get(library)?.push({
-          version: row.version,
-          versionId: row.versionId,
-          // Preserve raw string status here; DocumentManagementService will cast to VersionStatus
-          status: row.status,
-          progressPages: row.progressPages,
-          progressMaxPages: row.progressMaxPages,
-          sourceUrl: row.sourceUrl,
-          documentCount: row.documentCount,
-          uniqueUrlCount: row.uniqueUrlCount,
-          indexedAt: indexedAtISO,
-          libraryDescription: row.libraryDescription,
-          libraryDelayMs: row.libraryDelayMs ?? 0,
-          libraryMaxRetries: row.libraryMaxRetries,
+          const indexedAtISO = counts?.indexedAt
+            ? new Date(counts.indexedAt).toISOString()
+            : null;
+
+          return {
+            version: v.name, // empty string for unversioned
+            versionId: v.id,
+            status: v.status,
+            progressPages: v.progressPages,
+            progressMaxPages: v.progressMaxPages,
+            sourceUrl: v.sourceUrl,
+            documentCount: counts?.documentCount ?? 0,
+            uniqueUrlCount: counts?.uniqueUrlCount ?? 0,
+            indexedAt: indexedAtISO,
+            libraryDescription: lib.description,
+            libraryDelayMs: lib.delayBetweenPagesMs,
+            libraryMaxRetries: lib.maxRetries,
+          };
         });
-      }
 
-      // Sort versions within each library: descending (latest first), unversioned is "latest"
-      for (const versions of libraryMap.values()) {
-        versions.sort((a, b) => compareVersionsDescending(a.version, b.version));
+        // Sort versions descending (latest first)
+        versionEntries.sort((a, b) => compareVersionsDescending(a.version, b.version));
+        libraryMap.set(lib.name, versionEntries);
       }
 
       return libraryMap;
@@ -1307,8 +1099,8 @@ export class DocumentStore {
         paddedEmbeddings = rawEmbeddings.map((vector) => this.padVector(vector));
       }
 
-      // Resolve library and version IDs (creates them if they don't exist)
-      const versionId = await this.resolveVersionId(library, version);
+      // Resolve library and version IDs via ConfigStore (creates them if they don't exist)
+      const versionId = this.configStore.resolveVersion(library, version);
 
       // Delete existing documents for this page to prevent conflicts
       // First check if the page exists and get its ID
@@ -1397,16 +1189,14 @@ export class DocumentStore {
    */
   async deletePages(library: string, version: string): Promise<number> {
     try {
-      const normalizedVersion = version.toLowerCase();
-
-      // First delete documents
-      const result = this.statements.deleteDocuments.run(
+      const versionId = this.configStore.getVersionId(
         library.toLowerCase(),
-        normalizedVersion,
+        version.toLowerCase(),
       );
+      if (versionId === null) return 0;
 
-      // Then delete the pages (after documents are gone, due to foreign key constraints)
-      this.statements.deletePages.run(library.toLowerCase(), normalizedVersion);
+      const result = this.statements.deleteDocuments.run(versionId);
+      this.statements.deletePages.run(versionId);
 
       return result.changes;
     } catch (error) {
@@ -1473,49 +1263,30 @@ export class DocumentStore {
       const normalizedLibrary = library.toLowerCase();
       const normalizedVersion = version.toLowerCase();
 
-      // First, get the version ID and library ID
-      const versionResult = this.statements.getVersionId.get(
+      const versionId = this.configStore.getVersionId(
         normalizedLibrary,
         normalizedVersion,
-      ) as { id: number; library_id: number } | undefined;
-
-      if (!versionResult) {
-        // Version doesn't exist, return zero counts
+      );
+      if (versionId === null) {
         return { documentsDeleted: 0, versionDeleted: false, libraryDeleted: false };
       }
 
-      const { id: versionId, library_id: libraryId } = versionResult;
+      const ver = this.configStore.getVersionById(versionId);
+      const libraryId = ver?.libraryId;
 
-      // Delete in order to respect foreign key constraints:
-      // 1. documents (page_id → pages.id)
-      // 2. pages (version_id → versions.id)
-      // 3. versions (library_id → libraries.id)
-      // 4. libraries (if empty)
-
-      // Delete all documents for this version
+      // Delete documents and pages (order matters for FK constraints within documents)
       const documentsDeleted = await this.deletePages(library, version);
 
-      // Delete all pages for this version (must be done after documents, before version)
-      this.statements.deletePages.run(normalizedLibrary, normalizedVersion);
-
-      // Delete the version record
-      const versionDeleteResult = this.statements.deleteVersionById.run(versionId);
-      const versionDeleted = versionDeleteResult.changes > 0;
+      // Delete the version record from ConfigStore
+      this.configStore.deleteVersion(versionId);
+      const versionDeleted = true;
 
       let libraryDeleted = false;
-
-      // Check if we should remove the library
-      if (removeLibraryIfEmpty && versionDeleted) {
-        // Count remaining versions for this library
-        const countResult = this.statements.countVersionsByLibraryId.get(libraryId) as
-          | { count: number }
-          | undefined;
-        const remainingVersions = countResult?.count ?? 0;
-
+      if (removeLibraryIfEmpty && libraryId !== undefined) {
+        const remainingVersions = this.configStore.countVersionsForLibrary(libraryId);
         if (remainingVersions === 0) {
-          // No versions left, delete the library
-          const libraryDeleteResult = this.statements.deleteLibraryById.run(libraryId);
-          libraryDeleted = libraryDeleteResult.changes > 0;
+          this.configStore.deleteLibrary(libraryId);
+          libraryDeleted = true;
         }
       }
 
@@ -1583,8 +1354,13 @@ export class DocumentStore {
         return [];
       }
 
+      const versionId = this.configStore.getVersionId(
+        library.toLowerCase(),
+        version.toLowerCase(),
+      );
+      if (versionId === null) return [];
+
       const ftsQuery = this.escapeFtsQuery(query);
-      const normalizedVersion = version.toLowerCase();
 
       if (this.isVectorSearchEnabled) {
         // Hybrid search: vector + full-text search with RRF ranking
@@ -1605,10 +1381,7 @@ export class DocumentStore {
             FROM documents_vec dv
             JOIN documents d ON dv.rowid = d.id
             JOIN pages p ON d.page_id = p.id
-            JOIN versions v ON p.version_id = v.id
-            JOIN libraries l ON v.library_id = l.id
-            WHERE l.name = ?
-              AND COALESCE(v.name, '') = COALESCE(?, '')
+            WHERE p.version_id = ?
               AND dv.embedding MATCH ?
               AND dv.k = ?
             ORDER BY dv.distance
@@ -1621,10 +1394,7 @@ export class DocumentStore {
             FROM documents_fts f
             JOIN documents d ON f.rowid = d.id
             JOIN pages p ON d.page_id = p.id
-            JOIN versions v ON p.version_id = v.id
-            JOIN libraries l ON v.library_id = l.id
-            WHERE l.name = ?
-              AND COALESCE(v.name, '') = COALESCE(?, '')
+            WHERE p.version_id = ?
               AND documents_fts MATCH ?
             ORDER BY fts_score
             LIMIT ?
@@ -1651,12 +1421,10 @@ export class DocumentStore {
         `);
 
         const rawResults = stmt.all(
-          library.toLowerCase(),
-          normalizedVersion,
+          versionId,
           JSON.stringify(embedding),
           vectorSearchK,
-          library.toLowerCase(),
-          normalizedVersion,
+          versionId,
           ftsQuery,
           overfetchLimit,
         ) as RawSearchResult[];
@@ -1699,10 +1467,7 @@ export class DocumentStore {
           FROM documents_fts f
           JOIN documents d ON f.rowid = d.id
           JOIN pages p ON d.page_id = p.id
-          JOIN versions v ON p.version_id = v.id
-          JOIN libraries l ON v.library_id = l.id
-          WHERE l.name = ?
-            AND COALESCE(v.name, '') = COALESCE(?, '')
+          WHERE p.version_id = ?
             AND documents_fts MATCH ?
             AND NOT EXISTS (
               SELECT 1 FROM json_each(json_extract(d.metadata, '$.types')) je
@@ -1712,12 +1477,9 @@ export class DocumentStore {
           LIMIT ?
         `);
 
-        const rawResults = stmt.all(
-          library.toLowerCase(),
-          normalizedVersion,
-          ftsQuery,
-          limit,
-        ) as (RawSearchResult & { fts_score: number })[];
+        const rawResults = stmt.all(versionId, ftsQuery, limit) as (RawSearchResult & {
+          fts_score: number;
+        })[];
 
         // Assign FTS ranks based on order (best score = rank 1)
         return rawResults.map((row, index) => {
@@ -1731,7 +1493,13 @@ export class DocumentStore {
           return Object.assign(result, {
             score: -row.fts_score, // Convert BM25 score to positive value for consistency
             fts_rank: index + 1, // Assign rank based on order (1-based)
-            fts_snippet: (row as RawSearchResult & { fts_score: number; fts_snippet?: string | null }).fts_snippet ?? null,
+            fts_snippet:
+              (
+                row as RawSearchResult & {
+                  fts_score: number;
+                  fts_snippet?: string | null;
+                }
+              ).fts_snippet ?? null,
           });
         });
       }
@@ -1753,17 +1521,21 @@ export class DocumentStore {
     limit: number,
   ): Promise<DbPageChunk[]> {
     try {
+      const versionId = this.configStore.getVersionId(
+        library.toLowerCase(),
+        version.toLowerCase(),
+      );
+      if (versionId === null) return [];
+
       const parent = await this.getById(id);
       if (!parent) {
         return [];
       }
 
       const parentPath = parent.metadata.path ?? [];
-      const normalizedVersion = version.toLowerCase();
 
       const result = this.statements.getChildChunks.all(
-        library.toLowerCase(),
-        normalizedVersion,
+        versionId,
         parent.url,
         parentPath.length + 1,
         JSON.stringify(parentPath),
@@ -1787,16 +1559,19 @@ export class DocumentStore {
     limit: number,
   ): Promise<DbPageChunk[]> {
     try {
+      const versionId = this.configStore.getVersionId(
+        library.toLowerCase(),
+        version.toLowerCase(),
+      );
+      if (versionId === null) return [];
+
       const reference = await this.getById(id);
       if (!reference) {
         return [];
       }
 
-      const normalizedVersion = version.toLowerCase();
-
       const result = this.statements.getPrecedingSiblings.all(
-        library.toLowerCase(),
-        normalizedVersion,
+        versionId,
         reference.url,
         BigInt(id),
         JSON.stringify(reference.metadata.path),
@@ -1822,16 +1597,19 @@ export class DocumentStore {
     limit: number,
   ): Promise<DbPageChunk[]> {
     try {
+      const versionId = this.configStore.getVersionId(
+        library.toLowerCase(),
+        version.toLowerCase(),
+      );
+      if (versionId === null) return [];
+
       const reference = await this.getById(id);
       if (!reference) {
         return [];
       }
 
-      const normalizedVersion = version.toLowerCase();
-
       const result = this.statements.getSubsequentSiblings.all(
-        library.toLowerCase(),
-        normalizedVersion,
+        versionId,
         reference.url,
         BigInt(id),
         JSON.stringify(reference.metadata.path),
@@ -1858,6 +1636,12 @@ export class DocumentStore {
     id: string,
   ): Promise<DbPageChunk | null> {
     try {
+      const versionId = this.configStore.getVersionId(
+        library.toLowerCase(),
+        version.toLowerCase(),
+      );
+      if (versionId === null) return null;
+
       const child = await this.getById(id);
       if (!child) {
         return null;
@@ -1870,10 +1654,8 @@ export class DocumentStore {
         return null;
       }
 
-      const normalizedVersion = version.toLowerCase();
       const result = this.statements.getParentChunk.get(
-        library.toLowerCase(),
-        normalizedVersion,
+        versionId,
         child.url,
         JSON.stringify(parentPath),
         BigInt(id),
@@ -1901,24 +1683,22 @@ export class DocumentStore {
   ): Promise<DbPageChunk[]> {
     if (!ids.length) return [];
     try {
-      const normalizedVersion = version.toLowerCase();
+      const versionId = this.configStore.getVersionId(
+        library.toLowerCase(),
+        version.toLowerCase(),
+      );
+      if (versionId === null) return [];
+
       // Use parameterized query for variable number of IDs
       const placeholders = ids.map(() => "?").join(",");
       const stmt = this.db.prepare(
         `SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.content_type FROM documents d
          JOIN pages p ON d.page_id = p.id
-         JOIN versions v ON p.version_id = v.id
-         JOIN libraries l ON v.library_id = l.id
-         WHERE l.name = ? 
-           AND COALESCE(v.name, '') = COALESCE(?, '')
+         WHERE p.version_id = ?
            AND d.id IN (${placeholders}) 
          ORDER BY d.sort_order`,
       );
-      const rows = stmt.all(
-        library.toLowerCase(),
-        normalizedVersion,
-        ...ids,
-      ) as DbPageChunk[];
+      const rows = stmt.all(versionId, ...ids) as DbPageChunk[];
       return this.parseMetadataArray(rows);
     } catch (error) {
       throw new ConnectionError("Failed to fetch documents by IDs", error);
@@ -1935,22 +1715,20 @@ export class DocumentStore {
     url: string,
   ): Promise<DbPageChunk[]> {
     try {
-      const normalizedVersion = version.toLowerCase();
+      const versionId = this.configStore.getVersionId(
+        library.toLowerCase(),
+        version.toLowerCase(),
+      );
+      if (versionId === null) return [];
+
       const stmt = this.db.prepare(
         `SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.content_type FROM documents d
          JOIN pages p ON d.page_id = p.id
-         JOIN versions v ON p.version_id = v.id
-         JOIN libraries l ON v.library_id = l.id
-         WHERE l.name = ? 
-           AND COALESCE(v.name, '') = COALESCE(?, '')
+         WHERE p.version_id = ?
            AND p.url = ?
          ORDER BY d.sort_order`,
       );
-      const rows = stmt.all(
-        library.toLowerCase(),
-        normalizedVersion,
-        url,
-      ) as DbPageChunk[];
+      const rows = stmt.all(versionId, url) as DbPageChunk[];
       return this.parseMetadataArray(rows);
     } catch (error) {
       throw new ConnectionError(`Failed to fetch documents by URL ${url}`, error);
