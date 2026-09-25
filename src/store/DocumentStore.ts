@@ -1374,7 +1374,7 @@ export class DocumentStore {
         const vectorSearchK = overfetchLimit * this.vectorSearchMultiplier;
 
         const stmt = this.db.prepare(`
-          WITH vec_distances AS (
+          WITH vec_distances AS MATERIALIZED (
             SELECT
               dv.rowid as id,
               dv.distance as vec_distance
@@ -1386,18 +1386,29 @@ export class DocumentStore {
               AND dv.k = ?
             ORDER BY dv.distance
           ),
-          fts_scores AS (
+          fts_scores AS MATERIALIZED (
+            -- CROSS JOIN pins the join order: run the MATCH once, then filter
+            -- its rows by version. With a plain JOIN the planner drives from
+            -- pages/documents and re-runs the MATCH for every chunk in the
+            -- version, which took minutes on large libraries.
             SELECT
               f.rowid as id,
               bm25(documents_fts, 10.0, 1.0, 5.0, 1.0) as fts_score,
               snippet(documents_fts, 0, '**', '**', '...', 8) as fts_snippet
             FROM documents_fts f
-            JOIN documents d ON f.rowid = d.id
-            JOIN pages p ON d.page_id = p.id
+            CROSS JOIN documents d ON f.rowid = d.id
+            CROSS JOIN pages p ON d.page_id = p.id
             WHERE p.version_id = ?
               AND documents_fts MATCH ?
             ORDER BY fts_score
             LIMIT ?
+          ),
+          candidates AS (
+            -- Drive the final query from the matched ids instead of scanning
+            -- every document (ported from upstream e82d0de).
+            SELECT id FROM vec_distances
+            UNION
+            SELECT id FROM fts_scores
           )
           SELECT
             d.id,
@@ -1409,12 +1420,12 @@ export class DocumentStore {
             COALESCE(1 / (1 + v.vec_distance), 0) as vec_score,
             COALESCE(-MIN(f.fts_score, 0), 0) as fts_score,
             f.fts_snippet as fts_snippet
-          FROM documents d
+          FROM candidates c
+          JOIN documents d ON d.id = c.id
           JOIN pages p ON d.page_id = p.id
           LEFT JOIN vec_distances v ON d.id = v.id
           LEFT JOIN fts_scores f ON d.id = f.id
-          WHERE (v.id IS NOT NULL OR f.id IS NOT NULL)
-            AND NOT EXISTS (
+          WHERE NOT EXISTS (
               SELECT 1 FROM json_each(json_extract(d.metadata, '$.types')) je
               WHERE je.value = 'structural'
             )
@@ -1465,8 +1476,8 @@ export class DocumentStore {
             bm25(documents_fts, 10.0, 1.0, 5.0, 1.0) as fts_score,
             snippet(documents_fts, 0, '**', '**', '...', 8) as fts_snippet
           FROM documents_fts f
-          JOIN documents d ON f.rowid = d.id
-          JOIN pages p ON d.page_id = p.id
+          CROSS JOIN documents d ON f.rowid = d.id
+          CROSS JOIN pages p ON d.page_id = p.id
           WHERE p.version_id = ?
             AND documents_fts MATCH ?
             AND NOT EXISTS (
